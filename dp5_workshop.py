@@ -72,6 +72,10 @@ TOOL_MOVE          = 'move'
 TOOL_ZOOM          = 'zoom'
 TOOL_TEXT          = 'text'
 TOOL_STAMP         = 'stamp'          # stamp/paste brush from buffer
+TOOL_CROP          = 'crop'           # crop canvas to selection
+TOOL_RESIZE        = 'resize'         # resize canvas
+TOOL_DITHER        = 'dither'         # dither brush
+TOOL_SYMMETRY      = 'symmetry'       # symmetry/mirror drawing
 
 # Shape tools that have an outline/fill toggle via right-click
 SHAPE_FILL_PAIRS = {
@@ -116,9 +120,25 @@ except ImportError:
     SettingsDialog = None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
 #  Tool icon renderer — Photoshop-style white silhouettes on dark tile
-# ══════════════════════════════════════════════════════════════════════════════
+
+def _load_tool_icon(shape: str, size: int = 42, active: bool = False) -> QIcon:
+    """
+    Load tool icon: checks DP5_Workshop/icons/{shape}.png then .svg,
+    falls back to _make_tool_icon SVG/QPainter renderer.
+    """
+    import os
+    icons_dir = os.path.join(os.path.dirname(__file__), 'icons')
+    for ext in ('png', 'svg'):
+        path = os.path.join(icons_dir, f'{shape}.{ext}')
+        if os.path.isfile(path):
+            pix = QPixmap(path).scaled(
+                size, size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            return QIcon(pix)
+    return _make_tool_icon(shape, size, active)
+
 
 def _make_tool_icon(shape: str, size: int = 42,
                     active: bool = False) -> QIcon:
@@ -134,18 +154,33 @@ def _make_tool_icon(shape: str, size: int = 42,
     # Add entries here as you create new dp_*_icon() methods in
     # imgfactory_svg_icons.py — they'll be picked up automatically.
     _SVG_MAP = {
-        'pencil':        'dp_pencil_icon',
-        'eraser':        'dp_eraser_icon',
-        'fill':          'dp_bucket_icon',
-        'spray':         'dp_brush_icon',
-        'picker':        'dp_color_picker_icon',
-        'line':          'dp_line_icon',
-        'zoom':          'dp_magnify_icon',
-        # Add more as you create dp_*_icon() methods:
-        # 'stamp':       'dp_stamp_icon',
-        # 'curve':       'dp_curve_icon',
-        # 'select':      'dp_select_icon',
-        # 'text':        'dp_text_icon',
+        'pencil':          'dp_pencil_icon',
+        'eraser':          'dp_eraser_icon',
+        'fill':            'dp_bucket_icon',
+        'spray':           'dp_brush_icon',
+        'picker':          'dp_color_picker_icon',
+        'line':            'dp_line_icon',
+        'zoom':            'dp_magnify_icon',
+        'curve':           'dp_curve_icon',
+        'rect':            'dp_rect_icon',
+        'filled_rect':     'dp_filled_rect_icon',
+        'circle':          'dp_circle_icon',
+        'filled_circle':   'dp_filled_circle_icon',
+        'triangle':        'dp_triangle_icon',
+        'filled_triangle': 'dp_filled_triangle_icon',
+        'polygon':         'dp_polygon_icon',
+        'filled_polygon':  'dp_filled_polygon_icon',
+        'star':            'dp_star_icon',
+        'filled_star':     'dp_filled_star_icon',
+        'select':          'dp_select_icon',
+        'lasso':           'dp_lasso_icon',
+        'filled_lasso':    'dp_filled_lasso_icon',
+        'text':            'dp_text_icon',
+        'stamp':           'dp_stamp_icon',
+        'crop':            'dp_crop_icon',
+        'resize':          'dp_resize_icon',
+        'dither':          'dp_dither_icon',
+        'symmetry':        'dp_symmetry_icon',
     }
 
     if ICONS_AVAILABLE and shape in _SVG_MAP:
@@ -155,16 +190,18 @@ def _make_tool_icon(shape: str, size: int = 42,
             tile_bg  = '#1e1e24' if not active else '#d8d8e0'
             icon_col = '#f0f0f4' if not active else '#101014'
             try:
-                return fn(size, color=icon_col, bg_color=tile_bg)
-            except TypeError:
-                # bg_color not supported — render icon then composite onto tile
+                # Get the icon rendered transparent (no bg_color — avoids SVG corruption)
                 ico = fn(size, color=icon_col)
-                px  = QPixmap(size, size)
+                # Composite onto tile background manually
+                px = QPixmap(size, size)
                 px.fill(QColor(tile_bg))
-                p   = QPainter(px)
+                p  = QPainter(px)
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
                 p.drawPixmap(0, 0, ico.pixmap(size, size))
                 p.end()
                 return QIcon(px)
+            except Exception:
+                pass  # fall through to QPainter
 
     # ── QPainter fallback (shapes, lasso, select, text, etc.) ────────────────
     import math as _m
@@ -547,9 +584,9 @@ def _make_tool_icon(shape: str, size: int = 42,
     return QIcon(px)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  DP5Settings — per-tool settings (JSON, separate from global AppSettings)
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class DP5Settings:
     """
@@ -560,15 +597,27 @@ class DP5Settings:
 
     DEFAULTS = {
         'show_bitmap_list':  False,    # left panel visible
-        'tool_icon_size':    42,       # tool button pixel size (24–64)
+        'tool_icon_size':    42,       # tool button pixel size (20–64)
         'tool_icon_color':   'color',  # 'color' | 'white' | 'dark'
-        'tool_columns':      0,        # 0=auto, 2, 3, or 4
+        'tool_columns':      3,        # 3, 4, 5, or 6
+        'hidden_tools':      [],       # list of tool_ids to hide
+        'img_pal_cols':      16,       # image palette columns
+        'img_pal_rows':      16,       # image palette max visible rows
+        'user_pal_cols':     16,       # user palette columns
+        'user_pal_rows':     16,       # user palette max visible rows
         'default_zoom':      4,        # startup zoom level
         'undo_levels':       32,
         'default_width':     320,
         'default_height':    200,
-        'retro_palette':     'Amiga OCS',
+        'retro_palette':     'Amiga AGA WB',
         'show_pixel_grid':   True,
+        'platform_mode':     'none',   # 'none'|'c64'|'c64m'|'spectrum'|'msx'|'cpc'|'atari_st'|'amiga'
+        'show_cell_grid':    False,    # show platform cell boundaries
+        'show_statusbar':    True,     # show bottom status bar
+        'ui_font_size':      10,       # toolbar/button font size
+        'zoom_to_fit_resize': False,
+        'show_menubar':       False,
+        'menu_style':         'topbar',   # 'topbar' | 'dropdown'
     }
 
     def __init__(self):
@@ -640,6 +689,42 @@ class DP5SettingsDialog(QDialog):
         self._grid_chk.setChecked(self.s.get('show_pixel_grid'))
         cl.addRow("Show pixel grid:", self._grid_chk)
 
+        self._fit_resize_chk = QCheckBox()
+        self._fit_resize_chk.setChecked(self.s.get('zoom_to_fit_resize'))
+        self._fit_resize_chk.setToolTip("Always scale canvas to fill the viewport on window resize")
+        cl.addRow("Zoom to fit on resize:", self._fit_resize_chk)
+
+        self._menu_style_combo = QComboBox()
+        self._menu_style_combo.addItems(['topbar', 'dropdown'])
+        self._menu_style_combo.setCurrentText(self.s.get('menu_style'))
+        cl.addRow("Menu button style:", self._menu_style_combo)
+
+        self._img_pal_cols_spin = QSpinBox(); self._img_pal_cols_spin.setRange(4, 32)
+        self._img_pal_cols_spin.setValue(self.s.get('img_pal_cols'))
+        cl.addRow("Image palette cols:", self._img_pal_cols_spin)
+
+        self._img_pal_rows_spin = QSpinBox(); self._img_pal_rows_spin.setRange(1, 32)
+        self._img_pal_rows_spin.setValue(self.s.get('img_pal_rows'))
+        cl.addRow("Image palette max rows:", self._img_pal_rows_spin)
+
+        self._user_pal_cols_spin = QSpinBox(); self._user_pal_cols_spin.setRange(4, 32)
+        self._user_pal_cols_spin.setValue(self.s.get('user_pal_cols'))
+        cl.addRow("User palette cols:", self._user_pal_cols_spin)
+
+        self._user_pal_rows_spin = QSpinBox(); self._user_pal_rows_spin.setRange(1, 32)
+        self._user_pal_rows_spin.setValue(self.s.get('user_pal_rows'))
+        cl.addRow("User palette max rows:", self._user_pal_rows_spin)
+
+        self._platform_combo = QComboBox()
+        self._platform_combo.addItems([
+            'none','amiga','c64','c64m','spectrum','msx','cpc','atari_st'])
+        self._platform_combo.setCurrentText(self.s.get('platform_mode'))
+        cl.addRow("Platform mode:", self._platform_combo)
+
+        self._cell_grid_chk = QCheckBox()
+        self._cell_grid_chk.setChecked(self.s.get('show_cell_grid'))
+        cl.addRow("Show cell grid:", self._cell_grid_chk)
+
         tabs.addTab(canvas_tab, "Canvas")
 
         # ── Interface tab ────────────────────────────────────────────────────
@@ -651,7 +736,15 @@ class DP5SettingsDialog(QDialog):
         self._bitmap_chk.setChecked(self.s.get('show_bitmap_list'))
         ul.addRow("Show bitmap list panel:", self._bitmap_chk)
 
-        self._icon_size_spin = QSpinBox(); self._icon_size_spin.setRange(24, 64)
+        self._statusbar_chk = QCheckBox()
+        self._statusbar_chk.setChecked(self.s.get('show_statusbar'))
+        ul.addRow("Show status bar:", self._statusbar_chk)
+
+        self._font_size_spin = QSpinBox(); self._font_size_spin.setRange(7, 18)
+        self._font_size_spin.setValue(self.s.get('ui_font_size'))
+        ul.addRow("UI font size:", self._font_size_spin)
+
+        self._icon_size_spin = QSpinBox(); self._icon_size_spin.setRange(20, 64)
         self._icon_size_spin.setValue(self.s.get('tool_icon_size'))
         ul.addRow("Tool icon size (px):", self._icon_size_spin)
 
@@ -663,12 +756,59 @@ class DP5SettingsDialog(QDialog):
         ul.addRow("Tool icon colour:", self._icon_color_combo)
 
         self._cols_combo = QComboBox()
-        self._cols_combo.addItems(['Auto (fit to panel)', '2 columns', '3 columns', '4 columns'])
-        col_idx = {0: 0, 2: 1, 3: 2, 4: 3}.get(self.s.get('tool_columns'), 0)
+        self._cols_combo.addItems(['3 columns', '4 columns', '5 columns', '6 columns'])
+        col_idx = {3: 0, 4: 1, 5: 2, 6: 3}.get(self.s.get('tool_columns'), 0)
         self._cols_combo.setCurrentIndex(col_idx)
-        ul.addRow("Gadget bar columns:", self._cols_combo)
+        ul.addRow("Gadget columns:", self._cols_combo)
 
         tabs.addTab(ui_tab, "Interface")
+
+        # ── Gadgets tab ──────────────────────────────────────────────────────
+        gadgets_tab = QWidget()
+        gl = QVBoxLayout(gadgets_tab)
+        gl.setSpacing(4)
+        gl.addWidget(QLabel("Click to toggle tool visibility (highlighted = visible):"))
+        hidden = self.s.get('hidden_tools') or []
+        icon_sz = self.s.get('tool_icon_size')
+        btn_sz  = max(48, icon_sz + 6)
+        self._gadget_chks = {}
+        TOOL_LABELS = [
+            ('pencil','Pencil'), ('eraser','Eraser'), ('fill','Fill'),
+            ('spray','Spray'), ('picker','Picker'), ('curve','Curve'),
+            ('line','Line'), ('rect','Rectangle'), ('circle','Circle'),
+            ('triangle','Triangle'), ('polygon','Polygon'), ('star','Star'),
+            ('select','Select'), ('lasso','Lasso'), ('zoom','Zoom'),
+            ('text','Text'), ('crop','Crop'), ('resize','Resize'),
+            ('dither','Dither'), ('symmetry','Symmetry'),
+        ]
+        grid_w = QWidget()
+        grid_l = QGridLayout(grid_w)
+        grid_l.setSpacing(4)
+        grid_l.setContentsMargins(0, 0, 0, 0)
+        cols = 4
+        for idx, (tool_id, label) in enumerate(TOOL_LABELS):
+            btn = QPushButton()
+            btn.setCheckable(True)
+            btn.setChecked(tool_id not in hidden)
+            btn.setFixedSize(btn_sz, btn_sz + 14)
+            btn.setToolTip(label)
+            ico = _load_tool_icon(tool_id, icon_sz)
+            btn.setIcon(ico)
+            btn.setIconSize(QSize(icon_sz, icon_sz))
+            lbl_short = label[:6]
+            btn.setText(lbl_short)
+            btn.setStyleSheet(
+                "QPushButton { font-size: 8px; color: #aaa; "
+                "background: #2a2a2a; border: 1px solid #555; "
+                "padding-top: 2px; } "
+                "QPushButton:checked { background: #1a3a1a; border: 1px solid #4a4; }"
+            )
+            btn.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+            grid_l.addWidget(btn, idx // cols, idx % cols)
+            self._gadget_chks[tool_id] = btn
+        gl.addWidget(grid_w)
+        gl.addStretch()
+        tabs.addTab(gadgets_tab, "Gadgets")
 
         root.addWidget(tabs)
 
@@ -689,17 +829,29 @@ class DP5SettingsDialog(QDialog):
         self.s.set('default_zoom',     self._zoom_spin.value())
         self.s.set('undo_levels',      self._undo_spin.value())
         self.s.set('show_pixel_grid',  self._grid_chk.isChecked())
+        self.s.set('zoom_to_fit_resize', self._fit_resize_chk.isChecked())
+        self.s.set('menu_style',         self._menu_style_combo.currentText())
+        self.s.set('img_pal_cols',       self._img_pal_cols_spin.value())
+        self.s.set('img_pal_rows',       self._img_pal_rows_spin.value())
+        self.s.set('user_pal_cols',      self._user_pal_cols_spin.value())
+        self.s.set('user_pal_rows',      self._user_pal_rows_spin.value())
+        self.s.set('platform_mode',      self._platform_combo.currentText())
+        self.s.set('show_cell_grid',     self._cell_grid_chk.isChecked())
         self.s.set('show_bitmap_list', self._bitmap_chk.isChecked())
+        self.s.set('show_statusbar',   self._statusbar_chk.isChecked())
+        self.s.set('ui_font_size',     self._font_size_spin.value())
         self.s.set('tool_icon_size',   self._icon_size_spin.value())
         self.s.set('tool_icon_color',  self._icon_color_combo.currentText())
-        self.s.set('tool_columns',     [0, 2, 3, 4][self._cols_combo.currentIndex()])
+        self.s.set('tool_columns',     [3, 4, 5, 6][self._cols_combo.currentIndex()])
+        hidden = [tid for tid, chk in self._gadget_chks.items() if not chk.isChecked()]
+        self.s.set('hidden_tools',     hidden)
         self.s.save()
         self.accept()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  DP5 Canvas — pixel-accurate zoomable paint surface
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class DP5Canvas(QWidget):
     """Zoomable pixel-accurate paint canvas (inlined from dp5_functions.py)."""
@@ -715,8 +867,15 @@ class DP5Canvas(QWidget):
         self.offset     = QPoint(0, 0)
         self.tool       = TOOL_PENCIL
         self.color      = QColor(255, 0, 0, 255)
-        self.brush_size = 1
+        self.brush_size    = 1
+        self.opacity       = 1.0
+        self.dither_mode   = 'off'  # 'off' | 'checker' | 'bayer' | 'floyd'
+        self.symmetry_mode = 'off'  # 'off' | 'H' | 'V' | 'quad'
+        self._dither_toggle = False  # alternates per pixel in dither mode
         self.show_grid  = True
+        self.show_cell_grid = False
+        self.cell_w = 8   # platform cell width in pixels
+        self.cell_h = 8   # platform cell height in pixels
         self._drawing   = False
         self._last_pt   = None
         self._preview_start = None
@@ -790,12 +949,38 @@ class DP5Canvas(QWidget):
             i = (y * self.tex_w + x) * 4
             self.rgba[i:i+4] = [c.red(), c.green(), c.blue(), c.alpha()]
 
-    def set_pixel_brush(self, cx: int, cy: int, c: QColor):
+    def set_pixel_brush(self, cx: int, cy: int, c: QColor): #vers 2
+        """Paint brush with optional dither and symmetry."""
         s = self.brush_size
+        BAYER4 = [[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]]
+        if self.dither_mode != 'off':
+            swatch = getattr(self._editor, '_fgbg_swatch', None)
+            bg_color = swatch._bg if swatch else QColor(0,0,0,255)
+        else:
+            bg_color = c
         for dy in range(-s+1, s):
             for dx in range(-s+1, s):
                 if s == 1 or (dx*dx + dy*dy) < s*s:
-                    self.set_pixel(cx+dx, cy+dy, c)
+                    if self.dither_mode == 'checker':
+                        px_c = bg_color if (cx+dx+cy+dy) % 2 == 0 else c
+                    elif self.dither_mode == 'bayer':
+                        thresh = BAYER4[(cy+dy)%4][(cx+dx)%4] / 16.0
+                        px_c = c if thresh < 0.5 else bg_color
+                    else:
+                        px_c = c
+                    self.set_pixel(cx+dx, cy+dy, px_c)
+                    # Symmetry mirroring
+                    sym = self.symmetry_mode
+                    if sym in ('H', 'quad'):
+                        mx = self.tex_w - 1 - (cx+dx)
+                        self.set_pixel(mx, cy+dy, px_c)
+                    if sym in ('V', 'quad'):
+                        my = self.tex_h - 1 - (cy+dy)
+                        self.set_pixel(cx+dx, my, px_c)
+                    if sym == 'quad':
+                        mx = self.tex_w - 1 - (cx+dx)
+                        my = self.tex_h - 1 - (cy+dy)
+                        self.set_pixel(mx, my, px_c)
 
     # ── Drawing ops ───────────────────────────────────────────────────────────
 
@@ -1112,6 +1297,17 @@ class DP5Canvas(QWidget):
             for x in range(0, sw, iz):
                 painter.drawLine(x, 0, x, sh)
             for y in range(0, sh, iz):
+                painter.drawLine(0, y, sw, y)
+
+        # Platform cell grid
+        if self.show_cell_grid:
+            cw = int(self.cell_w * z)
+            ch = int(self.cell_h * z)
+            pen = QPen(QColor(255, 100, 0, 120), 1, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            for x in range(0, sw+1, cw):
+                painter.drawLine(x, 0, x, sh)
+            for y in range(0, sh+1, ch):
                 painter.drawLine(0, y, sw, y)
 
         # Shape / selection preview overlay (drag-to-draw tools only)
@@ -1669,9 +1865,9 @@ class DP5Canvas(QWidget):
             self.update()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  PaletteGrid — shared 2D swatch grid used for BOTH image and user palettes
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class PaletteGrid(QWidget):
     """
@@ -1776,9 +1972,9 @@ class PaletteGrid(QWidget):
 DP5PaletteBar = PaletteGrid
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  Colour Picker Widget (simple fallback — no screen capture)
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class ColorPickerWidget(QWidget):
     """Simple colour picker — opens QColorDialog."""
@@ -1811,9 +2007,9 @@ class ColorPickerWidget(QWidget):
         return self._color
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  FGBGSwatch — single DPaint5-style nested FG/BG colour indicator
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class FGBGSwatch(QWidget):
     """
@@ -1910,9 +2106,9 @@ class FGBGSwatch(QWidget):
             self.set_bg(c)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  BrushManager — panel listing saved brushes, load/save/delete
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class BrushManager(QWidget):
     """
@@ -2037,9 +2233,9 @@ class BrushManager(QWidget):
             QMessageBox.warning(self, "Import Error", str(e))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  BrushThumbnail — preview of the copy buffer, click to activate stamp mode
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class BrushThumbnail(QWidget):
     """
@@ -2112,9 +2308,9 @@ class BrushThumbnail(QWidget):
             self.clear_requested.emit()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  ColorPalPresetsMixin — retro palette presets (inlined from color_pal_presets.py)
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class ColorPalPresetsMixin:
     """Retro palette preset data and helpers — mixed into DP5Workshop."""
@@ -2283,6 +2479,44 @@ class ColorPalPresetsMixin:
             "#DBFE01","#DBFF55","#DCFFAB","#DBFFFF","#FFFF00","#FFFF55","#FFFFA9","#FFFFFF",
         ]
 
+        # MSX1 / TMS9918 — 16 colours
+        msx1 = [
+            "#000000","#010101","#3EB849","#74D07D",
+            "#5955E0","#8076F1","#B95E51","#65DBEF",
+            "#DB6559","#FF897D","#CCC35E","#DED087",
+            "#3AA241","#B766B5","#CCCCCC","#FFFFFF",
+        ]
+
+        # Atari ST — 16 colours from default palette
+        atari_st = [
+            "#FFFFFF","#FF0000","#00FF00","#FFFF00",
+            "#0000FF","#FF00FF","#00FFFF","#AAAAAA",
+            "#555555","#FF5555","#55FF55","#FFFF55",
+            "#5555FF","#FF55FF","#55FFFF","#000000",
+        ]
+
+        # Commodore Plus/4 — 16 base colours (luma 0)
+        plus4 = [
+            "#000000","#FFFFFF","#2B2B2B","#D4D4D4",
+            "#FF0000","#00FF00","#0000FF","#00FFFF",
+            "#FF00FF","#FFFF00","#FF5500","#00AA55",
+            "#5500FF","#FF55AA","#55AAFF","#AAAA00",
+        ]
+
+        # VIC-20 — 16 colours
+        vic20 = [
+            "#000000","#FFFFFF","#782922","#87D6DD",
+            "#AA5FB6","#55A049","#40318D","#BFCE72",
+            "#AA7449","#C9B887","#EA9090","#B2D4DC",
+            "#CE8DF6","#9DE88B","#8080E0","#E0E084",
+        ]
+
+        # Sinclair QL — 8 colours
+        sinclair_ql = [
+            "#000000","#FF0000","#00FF00","#FFFF00",
+            "#0000FF","#FF00FF","#00FFFF","#FFFFFF",
+        ]
+
         # Registry: name -> (hex_list, cols)
         # cols = how many swatches wide the grid should be for this palette
         self.retro_palettes = {
@@ -2294,6 +2528,11 @@ class ColorPalPresetsMixin:
             "Amstrad CPC":     (amstrad_cpc,  9),   # 27 colours — 3 rows × 9
             "Atari 800":       (atari_800,    8),   # 40 colours — 5 rows × 8
             "Atari 2600 NTSC": (atari_2600,   8),   # 128 colours — 16 rows × 8
+            "MSX1":            (msx1,         8),   # 16 colours — 2 rows × 8
+            "Atari ST":        (atari_st,     8),   # 16 colours — 2 rows × 8
+            "Plus/4":          (plus4,        8),   # 16 colours — 2 rows × 8
+            "VIC-20":          (vic20,        8),   # 16 colours — 2 rows × 8
+            "Sinclair QL":     (sinclair_ql,  8),   # 8 colours — 1 row × 8
             "ULA Plus":        (ula_plus,    16),   # 256 colours — 16×16
         }
         self.current_retro_palette = "Amiga OCS"
@@ -2305,14 +2544,19 @@ class ColorPalPresetsMixin:
         colors = [QColor(h) for h in data]
         return colors, cols
 
-    def _apply_retro_palette(self, name: str):
+    def _apply_retro_palette(self, name: str): #vers 2
         """Load a retro preset into the user palette grid."""
         self.current_retro_palette = name
         colors, cols = self._get_retro_colors(name)
         if hasattr(self, '_user_pal_grid'):
             self._user_pal_grid.set_colors(colors, cols)
+            grid_w = self._user_pal_grid._cols * self._user_pal_grid._cell
+            self._user_pal_grid.setFixedWidth(grid_w)
+            if hasattr(self, '_user_pal_scroll'):
+                sb_w = self._user_pal_scroll.verticalScrollBar().sizeHint().width()
+                self._user_pal_scroll.setFixedWidth(grid_w + sb_w + 4)
         if hasattr(self, '_retro_btn'):
-            self._retro_btn.setText(f"{name} ▼")
+            self._retro_btn.setText(f"{name}")
 
     def _show_retro_menu(self):
         menu = QMenu(self)
@@ -2324,9 +2568,9 @@ class ColorPalPresetsMixin:
                 self._retro_btn.rect().bottomLeft()))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  DP5Workshop — main container (DPaint5-faithful layout)
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class DP5Workshop(ColorPalPresetsMixin, QWidget):
     """Deluxe Paint 5 inspired bitmap editor — standalone + embeddable."""
@@ -2346,10 +2590,12 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         # DP5-specific settings (JSON, separate from global theme)
         self.dp5_settings = DP5Settings()
 
-        # Fonts
-        self.title_font  = QFont("Arial", 14)
-        self.panel_font  = QFont("Arial", 10)
-        self.button_font = QFont("Arial", 10)
+        # Fonts — size from settings
+        fs = self.dp5_settings.get('ui_font_size')
+        self.title_font  = QFont("Arial", fs + 4)
+        self.panel_font  = QFont("Arial", fs)
+        self.button_font = QFont("Arial", fs)
+        self.fonthsize   = max(7, fs - 1)
 
         # Window chrome
         self.use_system_titlebar  = False
@@ -2363,6 +2609,11 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
         # Canvas state — initial values from dp5_settings
         self._canvas_width  = self.dp5_settings.get('default_width')
+        self._canvas_bit_depth = 8  # 0=32bit, 1=24bit, 2=16bit, 3=8bit
+        self._dither_mode   = 'off'  # 'off' | 'checker' | 'bayer' | 'floyd'
+        self._symmetry_mode = 'off'  # cycles: off → H → V → quad
+        self._platform_mode = 'none'
+        self._enforce_constraints = False
         self._canvas_height = self.dp5_settings.get('default_height')
         self._canvas_zoom   = self.dp5_settings.get('default_zoom')
         self._undo_stack    = deque(maxlen=self.dp5_settings.get('undo_levels'))
@@ -2372,7 +2623,6 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         # Bitmap list (left panel)
         self._bitmap_list: List[dict] = []   # [{name, rgba, w, h}]
         self._current_bitmap = -1
-
         # AppSettings (global theme only)
         if main_window and hasattr(main_window, 'app_settings'):
             self.app_settings = main_window.app_settings
@@ -2451,6 +2701,9 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self._splitter.setStretchFactor(0, 0)   # bitmap list
         self._splitter.setStretchFactor(1, 1)   # canvas — stretches
         self._splitter.setStretchFactor(2, 0)   # tools / palette
+        self._splitter.setCollapsible(2, False)
+        right.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        right.setMaximumWidth(right.sizeHint().width())
 
         # Left panel: hidden by default — toggle via DP5 Settings
         self._left_panel.setVisible(self.dp5_settings.get('show_bitmap_list'))
@@ -2459,7 +2712,8 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
         # Status bar
         self._status_bar = QStatusBar()
-        self._status_bar.setMaximumHeight(22)
+        show_sb = self.dp5_settings.get('show_statusbar')
+        self._status_bar.setVisible(show_sb)
         main_layout.addWidget(self._status_bar)
         self._set_status(f"Canvas: {self._canvas_width}×{self._canvas_height}")
 
@@ -2505,6 +2759,15 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             return btn
 
         # ── Cog / Settings (standalone only) ──────────────────────────────
+        self.menu_toggle_btn = QPushButton("Menu")
+        self.menu_toggle_btn.setFont(self.button_font)
+        self.menu_toggle_btn.setToolTip("Show menu (topbar or dropdown — set in Settings)")
+        self.menu_toggle_btn.setMinimumHeight(28)
+        self.menu_toggle_btn.setMaximumHeight(28)
+        self.menu_toggle_btn.clicked.connect(self._on_menu_btn_clicked)
+        self.menu_toggle_btn.setVisible(self.standalone_mode)
+        layout.addWidget(self.menu_toggle_btn)
+
         self.settings_btn = QPushButton()
         self.settings_btn.setFont(self.button_font)
         self.settings_btn.setIcon(SVGIconFactory.settings_icon(20, icon_color))
@@ -2538,23 +2801,32 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
         layout.addStretch()
 
-        # ── [Load][Save][Import][Export][Undo] after title ─────────────────
-        # Reuse existing SVGIconFactory icons — no duplication needed
+        # ── [New][Load][Save][Undo][Clear][Brushes] after title ──────────────
+        self.tb_new_btn    = _tb("New",    "New canvas…",
+                                  self._new_canvas,
+                                  SVGIconFactory.new_icon)
         self.tb_load_btn   = _tb("Load",   "Load / open image file",
                                   self._import_bitmap,
                                   SVGIconFactory.open_icon)
         self.tb_save_btn   = _tb("Save",   "Save canvas as PNG",
                                   self._export_bitmap,
                                   SVGIconFactory.save_icon)
-        self.tb_import_btn = _tb("Import", "Import image (IFF, BMP, older formats)",
-                                  self._import_bitmap,
-                                  SVGIconFactory.import_icon)
-        self.tb_export_btn = _tb("Export", "Export canvas (IFF, BMP, older formats)",
-                                  self._export_bitmap,
-                                  SVGIconFactory.export_icon)
+        # self.tb_import_btn = _tb("Import", "Import image (IFF, BMP, older formats)",
+        #                           self._import_bitmap,
+        #                           SVGIconFactory.import_icon)
+        # self.tb_export_btn = _tb("Export", "Export canvas (IFF, BMP, older formats)",
+        #                           self._export_bitmap,
+        #                           SVGIconFactory.export_icon)
         self.tb_undo_btn   = _tb("Undo",   "Undo last action  (Ctrl+Z)",
                                   self._undo_canvas,
                                   SVGIconFactory.undo_icon)
+        try:
+            from apps.methods.imgfactory_svg_icons import get_clear_canvas_icon
+            self.tb_clr_btn = _tb("Clear", "Clear canvas",
+                                   self._clear_canvas,
+                                   lambda sz, col: get_clear_canvas_icon(sz, col))
+        except Exception:
+            self.tb_clr_btn = _tb("Clear", "Clear canvas", self._clear_canvas)
 
         # ── Brush Manager button ───────────────────────────────────────────
         self.brush_mgr_btn = QPushButton("Brushes")
@@ -2676,10 +2948,18 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)
 
-        # Menu bar
+        # Menu bar — hidden if dropdown mode or show_menubar is off
         mb = QMenuBar(panel)
+        self._menu_bar = mb
         self._build_canvas_menus(mb)
+        show_mb = (self.dp5_settings.get('show_menubar') and
+                   self.dp5_settings.get('menu_style') == 'topbar')
+        mb.setVisible(show_mb)
+        if not show_mb:
+            mb.setFixedHeight(0)
+            mb.setMaximumHeight(0)
         layout.addWidget(mb)
+        layout.setSpacing(0)
 
         # Canvas
         try:
@@ -2708,6 +2988,35 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         fm.addAction("Open image…",    self._import_bitmap)
         fm.addAction("Save as PNG…",   self._export_bitmap)
         fm.addAction("Export IFF…",    self._export_iff)
+        # Platform imports submenu
+        im = fm.addMenu("Import Platform Format")
+        im.addAction("ZX Spectrum SCR…",   self._import_scr)
+        im.addAction("MSX SC2…",           self._import_sc2)
+        im.addAction("Atari ST PI1…",      self._import_pi1)
+        im.addAction("C64 Koala…",         self._import_koala)
+        im.addAction("C64 Art Studio…",    self._import_art_studio)
+        im.addSeparator()
+        im.addAction("ZX Next NXI…",       self._import_nxi)
+        im.addAction("ZX Next PAL…",       self._import_pal)
+        # Platform exports submenu
+        ex = fm.addMenu("Export Platform Format")
+        ex.addAction("ZX Spectrum SCR…",   self._export_scr)
+        ex.addAction("MSX SC2…",           self._export_sc2)
+        ex.addAction("Atari ST PI1…",      self._export_pi1)
+        ex.addAction("C64 Koala…",         self._export_koala)
+        ex.addAction("C64 Art Studio…",    self._export_art_studio)
+        ex.addSeparator()
+        ex.addAction("ZX Next NXI…",       self._export_nxi)
+        ex.addAction("ZX Next PAL…",       self._export_pal)
+        # Executable exports submenu
+        xe = fm.addMenu("Export Executable")
+        xe.addAction("ZX Spectrum TAP…",   self._export_tap)
+        xe.addAction("ZX Next NEX…",       self._export_nex)
+        xe.addAction("C64 PRG (hires)…",   self._export_c64prg)
+        xe.addAction("C64 PRG (multi)…",   self._export_c64mprg)
+        xe.addAction("MSX COM…",           self._export_msxcom)
+        xe.addAction("Plus/4 PRG…",        self._export_plus4prg)
+        xe.addAction("VIC-20 PRG…",        self._export_vicprg)
         # Edit
         em = mb.addMenu("Edit")
         em.addAction("Undo\tCtrl+Z",       self._undo_canvas)
@@ -2744,6 +3053,11 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         pm.addAction("Invert colours",      self._invert)
         pm.addAction("Brighten +25",        lambda: self._adjust(25))
         pm.addAction("Darken -25",          lambda: self._adjust(-25))
+        pm.addSeparator()
+        dm = pm.addMenu("Dither canvas")
+        dm.addAction("Floyd-Steinberg…",    self._dither_floyd_steinberg)
+        dm.addAction("Ordered Bayer 4×4…",  self._dither_bayer_canvas)
+        dm.addAction("Checkerboard…",       self._dither_checker_canvas)
         # View
         vm = mb.addMenu("View")
         vm.addAction("Zoom in  Ctrl++",  lambda: self._set_zoom(
@@ -2761,6 +3075,28 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         ga.triggered.connect(
             lambda v: (setattr(self.dp5_canvas, 'show_grid', v),
                        self.dp5_canvas.update()) if self.dp5_canvas else None)
+        cg = vm.addAction("Cell grid (platform)")
+        cg.setCheckable(True); cg.setChecked(False)
+        cg.triggered.connect(self._toggle_cell_grid)
+        sb = vm.addAction("Status bar")
+        sb.setCheckable(True); sb.setChecked(self.dp5_settings.get('show_statusbar'))
+        sb.triggered.connect(self._toggle_statusbar)
+
+        # Platform menu
+        plm = mb.addMenu("Platform")
+        plm.addAction("None (free)",              lambda: self._set_platform('none'))
+        plm.addSeparator()
+        plm.addAction("Amiga LowRes  (8×1 cell)", lambda: self._set_platform('amiga'))
+        plm.addAction("C64 Hires     (8×8 cell)", lambda: self._set_platform('c64'))
+        plm.addAction("C64 Multicolor(4×8 cell)", lambda: self._set_platform('c64m'))
+        plm.addAction("ZX Spectrum   (8×8 cell)", lambda: self._set_platform('spectrum'))
+        plm.addAction("ZX Next 256   (free)",     lambda: self._set_platform('specnext'))
+        plm.addAction("ZX Next 320   (free)",     lambda: self._set_platform('specnext'))
+        plm.addAction("MSX1          (8×8 cell)", lambda: self._set_platform('msx'))
+        plm.addAction("Amstrad CPC   (4×8 cell)", lambda: self._set_platform('cpc'))
+        plm.addAction("Atari ST      (16×1 cell)",lambda: self._set_platform('atari_st'))
+        plm.addSeparator()
+        plm.addAction("Enforce colour constraints (toggle)", self._toggle_colour_constraints)
 
     # ── Right panel: gadget bar + palettes ────────────────────────────────────
 
@@ -2779,22 +3115,12 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         # Auto mode: pick columns so the panel stays ≤ ~280px
         # btn_sz=48 → 3col=150+framing=162, 4col=198+framing=210
         # btn_sz=36 → 3col=114, 4col=150  btn_sz=60 → 3col=186, 4col=246
-        req_cols = self.dp5_settings.get('tool_columns')      # 0=auto
-        if req_cols == 0:
-            # auto: prefer 4 if icon_sz ≤ 36, 3 if ≤ 50, else 2
-            if icon_sz <= 36:
-                n_cols = 4
-            elif icon_sz <= 50:
-                n_cols = 3
-            else:
-                n_cols = 2
-        else:
-            n_cols = max(2, min(4, req_cols))
+        req_cols = self.dp5_settings.get('tool_columns')
+        n_cols = max(3, min(6, req_cols))
 
-        # Panel width: n_cols buttons + gaps + outer margins
-        panel_w = btn_sz * n_cols + gap * (n_cols - 1) + 16
-        panel.setMinimumWidth(panel_w)
-        panel.setMaximumWidth(panel_w + 20)   # small slack for scroll bars
+        # Panel width: fit to gadget grid + 20px extra for palette labels
+        panel_w = btn_sz * n_cols + gap * (n_cols - 1) + 36
+        panel.setFixedWidth(panel_w)
 
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -2822,7 +3148,13 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             (TOOL_LASSO,    'lasso',    'Lasso  (G) — right-click to fill shape'),
             (TOOL_ZOOM,     'zoom',     'Zoom — click in, right-click out (Z)'),
             (TOOL_TEXT,     'text',     'Place text on canvas (I)'),
+            (TOOL_CROP,     'crop',     'Crop canvas to selection (X)'),
+            (TOOL_RESIZE,   'resize',   'Resize canvas (V)'),
+            (TOOL_DITHER,   'dither',   'Dither brush — checkerboard FG/BG pattern (D)'),
+            (TOOL_SYMMETRY, 'symmetry', 'Symmetry — click to cycle: H / V / Quad / Off (Y)'),
         ]
+        hidden_tools = self.dp5_settings.get('hidden_tools') or []
+        TOOL_ORDER = [(t, s, tip) for t, s, tip in TOOL_ORDER if t not in hidden_tools]
 
         # ── Build gadget grid ──────────────────────────────────────────────
         gadget_grid = QGridLayout()
@@ -2860,7 +3192,7 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             btn.setFixedSize(btn_sz, btn_sz)
             btn.setCheckable(True)
             btn.setToolTip(tip)
-            ico = _make_tool_icon(shape, icon_sz, active=False)
+            ico = _load_tool_icon(shape, icon_sz, active=False)
             btn.setIcon(ico)
             btn.setIconSize(QSize(icon_sz, icon_sz))
             btn.clicked.connect(lambda _, t=tool_id: self._select_tool(t))
@@ -2869,91 +3201,55 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
         layout.addLayout(gadget_grid)
 
-        # ── UNDO / CLR — always 2 buttons side by side ────────────────────
-        undo_clr = QHBoxLayout()
-        undo_clr.setSpacing(gap)
-
-        undo_btn = QPushButton("UN\nDO")
-        undo_btn.setFixedSize(btn_sz, btn_sz)
-        undo_btn.setFont(QFont("Arial", max(7, icon_sz // 6)))
-        undo_btn.setToolTip("Undo  Ctrl+Z")
-        undo_btn.clicked.connect(self._undo_canvas)
-        try:
-            undo_btn.setIcon(SVGIconFactory.undo_icon(max(14, icon_sz - 14), icon_color))
-            undo_btn.setIconSize(QSize(max(14, icon_sz - 14), max(14, icon_sz - 14)))
-        except Exception:
-            pass
-
-        clr_btn = QPushButton("CLR")
-        clr_btn.setFixedSize(btn_sz, btn_sz)
-        clr_btn.setFont(QFont("Arial", max(8, icon_sz // 5)))
-        clr_btn.setToolTip("Clear canvas")
-        clr_btn.clicked.connect(self._clear_canvas)
-        try:
-            from apps.methods.imgfactory_svg_icons import get_clear_canvas_icon
-            clr_btn.setIcon(get_clear_canvas_icon(max(14, icon_sz - 14), icon_color))
-            clr_btn.setIconSize(QSize(max(14, icon_sz - 14), max(14, icon_sz - 14)))
-        except Exception:
-            pass
-
-        undo_clr.addWidget(undo_btn)
-        undo_clr.addWidget(clr_btn)
-        undo_clr.addStretch()
-        layout.addLayout(undo_clr)
-
         layout.addSpacing(4)
 
         # ── Brush size slider + value label ───────────────────────────────
         size_hdr = QHBoxLayout()
         size_lbl = QLabel("Size")
-        size_lbl.setFont(QFont("Arial", 9))
+        size_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
         size_hdr.addWidget(size_lbl)
+        self._size_sl = QSlider(Qt.Orientation.Horizontal)
+        self._size_sl.setRange(1, 20)
+        self._size_sl.setValue(1)
+        self._size_sl.setMinimumHeight(24)
+        self._size_sl.valueChanged.connect(self._set_brush_size)
+        size_hdr.addWidget(self._size_sl)
         self._size_val_lbl = QLabel("1")
         self._size_val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight |
                                         Qt.AlignmentFlag.AlignVCenter)
-        self._size_val_lbl.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self._size_val_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
         self._size_val_lbl.setFixedWidth(28)
         size_hdr.addWidget(self._size_val_lbl)
         layout.addLayout(size_hdr)
 
-        self._size_sl = QSlider(Qt.Orientation.Horizontal)
-        self._size_sl.setRange(1, 20)
-        self._size_sl.setValue(1)
-        self._size_sl.setMinimumHeight(22)
-        self._size_sl.valueChanged.connect(self._set_brush_size)
-        layout.addWidget(self._size_sl)
-
         # ── Snap to grid toggle ───────────────────────────────────────────
         snap_row = QHBoxLayout()
         self._snap_chk = QCheckBox("Snap to grid")
-        self._snap_chk.setFont(QFont("Arial", 8))
+        self._snap_chk.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
         self._snap_chk.setChecked(False)
         self._snap_chk.setToolTip("Snap drawing to pixel grid")
         self._snap_chk.toggled.connect(self._set_snap_grid)
         self._grid_chk2 = QCheckBox("Show grid")
-        self._grid_chk2.setFont(QFont("Arial", 8))
+        self._grid_chk2.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
         self._grid_chk2.setChecked(self.dp5_settings.get('show_pixel_grid'))
         self._grid_chk2.toggled.connect(self._set_show_grid)
-        snap_row.addWidget(self._snap_chk)
-        layout.addLayout(snap_row)
-        layout.addWidget(self._grid_chk2)
-
-        # ── Zoom label ────────────────────────────────────────────────────
         self._zoom_lbl = QLabel(f"{self._canvas_zoom}×")
-        self._zoom_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._zoom_lbl.setFont(QFont("Arial", 8))
-        layout.addWidget(self._zoom_lbl)
+        self._zoom_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._zoom_lbl.setFont(QFont("Arial", self.fonthsize))
+        snap_row.addWidget(self._snap_chk)
+        snap_row.addWidget(self._grid_chk2)
+        snap_row.addWidget(self._zoom_lbl)
+        layout.addLayout(snap_row)
 
         layout.addSpacing(4)
 
         # ── FG / BG swatch  +  brush thumbnail ───────────────────────────
         fgbg_row_lbl = QHBoxLayout()
         fgbg_lbl = QLabel("FG / BG")
-        fgbg_lbl.setFont(QFont("Arial", 8))
+        fgbg_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
         fgbg_row_lbl.addWidget(fgbg_lbl)
-        fgbg_row_lbl.addStretch()
         brush_lbl = QLabel("Brush")
-        brush_lbl.setFont(QFont("Arial", 8))
+        brush_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
         fgbg_row_lbl.addWidget(brush_lbl)
         layout.addLayout(fgbg_row_lbl)
 
@@ -2965,58 +3261,151 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self._fgbg_swatch.bg_changed.connect(self._on_bg_changed)
         fgbg_row.addWidget(self._fgbg_swatch)
 
-        fgbg_row.addStretch()
-
         self._brush_thumb = BrushThumbnail()
         self._brush_thumb.stamp_requested.connect(self._activate_stamp_mode)
         self._brush_thumb.clear_requested.connect(self._clear_brush)
         fgbg_row.addWidget(self._brush_thumb)
 
+        zoom_stack = QVBoxLayout()
+        zoom_stack.setSpacing(2)
+        zoom_in_btn = QPushButton()
+        zoom_in_btn.setFixedSize(24, 24)
+        zoom_in_btn.setToolTip("Zoom in")
+        zoom_in_btn.clicked.connect(lambda: self._set_zoom(
+            self._canvas_zoom * 1.25 if self._canvas_zoom < 1 else min(16, self._canvas_zoom + 1)))
+        try:
+            zoom_in_btn.setIcon(SVGIconFactory.zoom_in_icon(14, icon_color))
+            zoom_in_btn.setIconSize(QSize(14, 14))
+        except Exception:
+            zoom_in_btn.setText("+")
+        zoom_out_btn = QPushButton()
+        zoom_out_btn.setFixedSize(24, 24)
+        zoom_out_btn.setToolTip("Zoom out")
+        zoom_out_btn.clicked.connect(lambda: self._set_zoom(
+            max(0.05, self._canvas_zoom * 0.8 if self._canvas_zoom <= 1 else self._canvas_zoom - 1)))
+        try:
+            zoom_out_btn.setIcon(SVGIconFactory.zoom_out_icon(14, icon_color))
+            zoom_out_btn.setIconSize(QSize(14, 14))
+        except Exception:
+            zoom_out_btn.setText("-")
+        zoom_stack.addWidget(zoom_in_btn)
+        zoom_stack.addWidget(zoom_out_btn)
+        fgbg_row.addLayout(zoom_stack)
+
         layout.addLayout(fgbg_row)
+
+        # ── Opacity ───────────────────────────────────────────────────────
+        op_row = QHBoxLayout()
+        op_lbl = QLabel("Opacity")
+        op_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
+        op_row.addWidget(op_lbl)
+        self._opacity_sl = QSlider(Qt.Orientation.Horizontal)
+        self._opacity_sl.setRange(0, 100)
+        self._opacity_sl.setValue(100)
+        self._opacity_sl.setMinimumHeight(24)
+        self._opacity_sl.valueChanged.connect(self._set_opacity)
+        op_row.addWidget(self._opacity_sl)
+        self._opacity_val_lbl = QLabel("100%")
+        self._opacity_val_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
+        self._opacity_val_lbl.setFixedWidth(34)
+        self._opacity_val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        op_row.addWidget(self._opacity_val_lbl)
+        layout.addLayout(op_row)
+
+        # ── Colour history ────────────────────────────────────────────────
+        hist_lbl = QLabel("Recent")
+        hist_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
+        layout.addWidget(hist_lbl)
+        hist_row = QHBoxLayout()
+        hist_row.setSpacing(2)
+        self._color_history = []
+        self._color_hist_btns = []
+        for _ in range(12):
+            b = QPushButton()
+            b.setFixedSize(12, 12)
+            b.setStyleSheet("background:#222; border:1px solid #555;")
+            b.setEnabled(False)
+            hist_row.addWidget(b)
+            self._color_hist_btns.append(b)
+        layout.addLayout(hist_row)
 
         layout.addSpacing(4)
 
         # ── IMAGE palette ─────────────────────────────────────────────────
-        img_pal_lbl = QLabel("Image Palette")
-        img_pal_lbl.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+        img_pal_lbl = QLabel("Image Palette:")
+        img_pal_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
         layout.addWidget(img_pal_lbl)
 
-        img_pal_scroll = QScrollArea()
-        img_pal_scroll.setWidgetResizable(True)
-        img_pal_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        img_pal_scroll.setMinimumHeight(80)
-        img_pal_scroll.setMaximumHeight(200)
-        self.pal_bar = PaletteGrid(cols=16, cell=12)
-        self.pal_bar.color_picked.connect(self._on_image_palette_color)
-        img_pal_scroll.setWidget(self.pal_bar)
-        layout.addWidget(img_pal_scroll)
+        img_pal_ctrl = QHBoxLayout()
+        self._bit_depth_combo = QComboBox()
+        self._bit_depth_combo.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
+        self._bit_depth_combo.addItems(["32bit", "24bit", "16bit", "8bit"])
+        self._bit_depth_combo.setFixedHeight(24)
+        self._bit_depth_combo.setFixedWidth(40)
+        self._bit_depth_combo.setToolTip("Colour depth for quantization")
+        img_pal_ctrl.addWidget(self._bit_depth_combo)
+        img_pal_apply_btn = QPushButton("Apply")
+        img_pal_apply_btn.setFont(QFont("Arial", self.fonthsize))
+        img_pal_apply_btn.setFixedHeight(24)
+        img_pal_apply_btn.setToolTip("Quantize canvas to selected bit depth")
+        img_pal_apply_btn.clicked.connect(self._apply_bit_depth)
+        img_pal_ctrl.addWidget(img_pal_apply_btn)
+        self._img_pal_group_btn = QPushButton("Group")
+        self._img_pal_group_btn.setFont(QFont("Arial", self.fonthsize))
+        self._img_pal_group_btn.setFixedHeight(24)
+        self._img_pal_group_btn.setToolTip("Sort palette by hue — click to toggle asc/desc")
+        self._img_pal_group_btn.clicked.connect(self._group_palette)
+        img_pal_ctrl.addWidget(self._img_pal_group_btn)
+        self._group_palette_asc = True
+        layout.addLayout(img_pal_ctrl)
 
-        layout.addSpacing(4)
+        # Image palette — cols/rows from settings
+        img_cols = self.dp5_settings.get('img_pal_cols')
+        img_rows = self.dp5_settings.get('img_pal_rows')
+        img_pal_w  = img_cols * 12
+        img_pal_max_h = img_rows * 12 + 2
+        self.pal_bar = PaletteGrid(cols=img_cols, cell=12)
+        self.pal_bar.color_picked.connect(self._on_image_palette_color)
+        self.pal_bar.setFixedWidth(img_pal_w)
+        img_pal_scroll = QScrollArea()
+        img_pal_scroll.setWidget(self.pal_bar)
+        img_pal_scroll.setWidgetResizable(False)
+        img_pal_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        img_pal_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        img_pal_scroll.setFixedWidth(img_pal_w + img_pal_scroll.verticalScrollBar().sizeHint().width() + 4)
+        img_pal_scroll.setMaximumHeight(img_pal_max_h)
+        img_pal_scroll.setMinimumHeight(12)
+        layout.addWidget(img_pal_scroll)
 
         # ── USER palette (retro presets) ──────────────────────────────────
         user_pal_hdr = QHBoxLayout()
-        user_pal_lbl = QLabel("User Palette")
-        user_pal_lbl.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+        user_pal_lbl = QLabel("User Palette:")
+        user_pal_lbl.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
         user_pal_hdr.addWidget(user_pal_lbl)
-
-        self._retro_btn = QPushButton("Amiga OCS ▼")
-        self._retro_btn.setFont(QFont("Arial", 7))
-        self._retro_btn.setFixedHeight(18)
-        self._retro_btn.setToolTip("Choose retro palette preset")
+        self._retro_btn = QPushButton("Amiga AGA WB")
+        self._retro_btn.setFont(QFont("Arial", self.fonthsize, QFont.Weight.Bold))
+        self._retro_btn.setFixedHeight(24)
+        self._retro_btn.setToolTip("User palette — choose retro preset")
         self._retro_btn.clicked.connect(self._show_retro_menu)
         user_pal_hdr.addWidget(self._retro_btn)
         layout.addLayout(user_pal_hdr)
 
-        user_pal_scroll = QScrollArea()
-        user_pal_scroll.setWidgetResizable(True)
-        user_pal_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        user_pal_scroll.setMinimumHeight(60)
-        user_pal_scroll.setMaximumHeight(160)
-        self._user_pal_grid = PaletteGrid(cols=8, cell=12)
+        user_cols = self.dp5_settings.get('user_pal_cols')
+        user_rows = self.dp5_settings.get('user_pal_rows')
+        user_pal_w = user_cols * 12
+        user_pal_max_h = user_rows * 12 + 2
+        self._user_pal_grid = PaletteGrid(cols=user_cols, cell=12)
         self._user_pal_grid.color_picked.connect(self._on_user_palette_color)
+        self._user_pal_grid.setFixedWidth(user_pal_w)
+        user_pal_scroll = QScrollArea()
         user_pal_scroll.setWidget(self._user_pal_grid)
+        user_pal_scroll.setWidgetResizable(False)
+        user_pal_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        user_pal_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        user_pal_scroll.setFixedWidth(user_pal_w + user_pal_scroll.verticalScrollBar().sizeHint().width() + 4)
+        user_pal_scroll.setMaximumHeight(user_pal_max_h)
+        user_pal_scroll.setMinimumHeight(12)
+        self._user_pal_scroll = user_pal_scroll
         layout.addWidget(user_pal_scroll)
 
         # Load default retro palette
@@ -3060,9 +3449,23 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             if self.dp5_canvas:
                 self.dp5_canvas.tool = actual
 
-    def _select_tool(self, tool_id: str):
+    def _select_tool(self, tool_id: str): #vers 2
         """Select a tool, resolving fill state for shape tools."""
-        # For shape tools, resolve to outline or filled variant based on fill state
+        # Crop and resize are immediate actions, not persistent tools
+        if tool_id == TOOL_CROP:
+            self._crop_to_selection()
+            return
+        if tool_id == TOOL_RESIZE:
+            self._resize_canvas_dialog()
+            return
+        # Dither and symmetry are toggles
+        if tool_id == TOOL_DITHER:
+            self._toggle_dither_mode()
+            return
+        if tool_id == TOOL_SYMMETRY:
+            self._toggle_symmetry_mode()
+            return
+
         actual_tool = tool_id
         if tool_id in self._shape_fill_state:
             if self._shape_fill_state[tool_id]:
@@ -3127,10 +3530,63 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         if hasattr(self, '_size_val_lbl'):
             self._size_val_lbl.setText(str(v))
 
-    def _on_fg_changed(self, c: QColor):
+    def _toggle_dither_mode(self): #vers 2
+        """Cycle dither: off → checker → bayer → off."""
+        cycle = {'off': 'checker', 'checker': 'bayer', 'bayer': 'off'}
+        self._dither_mode = cycle[self._dither_mode]
+        if self.dp5_canvas:
+            self.dp5_canvas.dither_mode = self._dither_mode
+        btn = self._tool_btns.get(TOOL_DITHER)
+        if btn:
+            labels = {'off':'Dither','checker':'Dthr ⊞','bayer':'Dthr ▦'}
+            btn.setChecked(self._dither_mode != 'off')
+            btn.setToolTip(f"Dither: {self._dither_mode} — click to cycle")
+        self._set_status(f"Dither: {self._dither_mode}")
+
+    def _toggle_symmetry_mode(self): #vers 2
+        """Cycle symmetry: off → H → V → quad → off."""
+        cycle = {'off': 'H', 'H': 'V', 'V': 'quad', 'quad': 'off'}
+        self._symmetry_mode = cycle[self._symmetry_mode]
+        if self.dp5_canvas:
+            self.dp5_canvas.symmetry_mode = self._symmetry_mode
+        btn = self._tool_btns.get(TOOL_SYMMETRY)
+        if btn:
+            labels = {'off': 'Sym', 'H': 'Sym H', 'V': 'Sym V', 'quad': 'Sym X'}
+            btn.setChecked(self._symmetry_mode != 'off')
+            btn.setToolTip(f"Symmetry: {self._symmetry_mode.upper()} — click to cycle")
+        self._set_status(f"Symmetry: {self._symmetry_mode.upper()}")
+
+    def _set_opacity(self, v: int): #vers 1
+        if self.dp5_canvas:
+            self.dp5_canvas.opacity = v / 100.0
+        if hasattr(self, '_opacity_val_lbl'):
+            self._opacity_val_lbl.setText(f"{v}%")
+
+    def _on_fg_changed(self, c: QColor): #vers 2
         if self.dp5_canvas:
             self.dp5_canvas.color = c
         self.pal_bar.set_selection_by_color(c)
+        self._push_color_history(c)
+
+    def _push_color_history(self, c: QColor): #vers 1
+        hex_c = c.name()
+        if self._color_history and self._color_history[0] == hex_c:
+            return
+        if hex_c in self._color_history:
+            self._color_history.remove(hex_c)
+        self._color_history.insert(0, hex_c)
+        self._color_history = self._color_history[:12]
+        for i, btn in enumerate(self._color_hist_btns):
+            if i < len(self._color_history):
+                col = self._color_history[i]
+                btn.setStyleSheet(f"background:{col}; border:1px solid #555;")
+                btn.setEnabled(True)
+                btn.setToolTip(col)
+                btn.clicked.disconnect() if btn.receivers(btn.clicked) > 0 else None
+                btn.clicked.connect(lambda _, hc=col: self._fgbg_swatch.set_fg(QColor(hc)))
+            else:
+                btn.setStyleSheet("background:#222; border:1px solid #555;")
+                btn.setEnabled(False)
 
     def _on_bg_changed(self, c: QColor):
         # Background colour stored in swatch; eraser uses it in future
@@ -3146,12 +3602,101 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self.dp5_canvas.color = c
         self._fgbg_swatch.set_fg(c)
 
+    def _apply_bit_depth(self): #vers 2
+        """Quantize canvas RGBA to selected bit depth and update palette grid."""
+        if not self.dp5_canvas: return
+        depth = self._bit_depth_combo.currentText()
+        try:
+            from PIL import Image
+            w, h = self.dp5_canvas.tex_w, self.dp5_canvas.tex_h
+            img = Image.frombytes('RGBA', (w, h), bytes(self.dp5_canvas.rgba))
+
+            if depth == "32b":
+                out_img = img  # no change to canvas
+            elif depth == "24b":
+                out_img = img.convert('RGB').convert('RGBA')
+            elif depth == "16b":
+                rgb = img.convert('RGB')
+                pixels = rgb.tobytes()
+                buf = bytearray(len(pixels))
+                for i in range(0, len(pixels), 3):
+                    buf[i]   = (pixels[i]   >> 3) << 3
+                    buf[i+1] = (pixels[i+1] >> 2) << 2
+                    buf[i+2] = (pixels[i+2] >> 3) << 3
+                out_img = Image.frombytes('RGB', (w, h), bytes(buf)).convert('RGBA')
+            elif depth == "8b":
+                rgb = img.convert('RGB')
+                q = rgb.quantize(colors=256)
+                out_img = q.convert('RGB').convert('RGBA')
+
+            # Write back to canvas
+            self.dp5_canvas.rgba = bytearray(out_img.tobytes())
+            self.dp5_canvas.update()
+
+            # Update palette grid
+            p_img = out_img.convert('RGB').quantize(colors=256)
+            pal_flat = p_img.getpalette()
+            palette = [(pal_flat[i*3], pal_flat[i*3+1], pal_flat[i*3+2]) for i in range(256)]
+            self.pal_bar.set_palette_raw(palette)
+            self._set_status(f"Applied {depth} quantization")
+        except Exception as e:
+            QMessageBox.warning(self, "Bit Depth Error", str(e))
+
+    def _group_palette(self): #vers 3
+        """Sort current image palette by hue, toggling asc/desc each click."""
+        try:
+            import colorsys
+            if not hasattr(self.pal_bar, '_colors') or not self.pal_bar._colors:
+                return
+            self._group_palette_asc = not getattr(self, '_group_palette_asc', True)
+            asc = self._group_palette_asc
+            def hue_key(qc):
+                h, s, v = colorsys.rgb_to_hsv(qc.red()/255, qc.green()/255, qc.blue()/255)
+                return (h, -v, -s)
+            sorted_colors = sorted(self.pal_bar._colors, key=hue_key, reverse=not asc)
+            palette = [(c.red(), c.green(), c.blue()) for c in sorted_colors]
+            self.pal_bar.set_palette_raw(palette)
+            if hasattr(self, '_img_pal_group_btn'):
+                self._img_pal_group_btn.setText("Group ↑" if asc else "Group ↓")
+            self._set_status(f"Palette grouped by hue ({'asc' if asc else 'desc'})")
+        except Exception as e:
+            QMessageBox.warning(self, "Group Error", str(e))
+
     def _update_color_swatches(self):
         """Sync FGBGSwatch after colour changes (e.g. picker tool)."""
         if not hasattr(self, '_fgbg_swatch'): return
         if self.dp5_canvas:
             self._fgbg_swatch.set_fg(self.dp5_canvas.color)
             self.pal_bar.set_selection_by_color(self.dp5_canvas.color)
+
+    def _on_menu_btn_clicked(self): #vers 3
+        style = self.dp5_settings.get('menu_style')
+        if style == 'dropdown':
+            self._show_dropdown_menu()
+        else:
+            on = not self.dp5_settings.get('show_menubar')
+            self.dp5_settings.set('show_menubar', on)
+            self.dp5_settings.save()
+            if hasattr(self, '_menu_bar'):
+                self._menu_bar.setMaximumHeight(16777215 if on else 0)
+                self._menu_bar.setFixedHeight(16777215 if on else 0)
+                self._menu_bar.setVisible(on)
+
+    def _show_dropdown_menu(self): #vers 1
+        """Pop up the canvas menus as a single QMenu dropdown."""
+        menu = QMenu(self)
+        self._build_canvas_menus(menu)
+        btn = getattr(self, 'menu_toggle_btn', None)
+        if btn:
+            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        else:
+            menu.exec(self.cursor().pos())
+
+    def _toggle_menubar(self, on: bool): #vers 2
+        self.dp5_settings.set('show_menubar', on)
+        self.dp5_settings.save()
+        if hasattr(self, '_menu_bar'):
+            self._menu_bar.setVisible(on)
 
     def _set_snap_grid(self, on: bool):
         if self.dp5_canvas:
@@ -3162,6 +3707,58 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self.dp5_canvas.show_grid = on
             self.dp5_canvas.update()
         self.dp5_settings.set('show_pixel_grid', on)
+
+    # Platform cell sizes: (cell_w, cell_h, max_colours_per_cell)
+    _PLATFORM_CELLS = {
+        'none':     (1,   1,   256),
+        'amiga':    (8,   1,   32),
+        'c64':      (8,   8,   2),
+        'c64m':     (4,   8,   4),
+        'spectrum': (8,   8,   2),
+        'specnext': (1,   1,   256),  # ZX Next — full 256 colour, no cell constraint
+        'msx':      (8,   8,   2),
+        'cpc':      (4,   8,   4),
+        'atari_st': (16,  1,   16),
+    }
+
+    def _set_platform(self, mode: str): #vers 2
+        """Set platform mode — cell grid, auto-load palette, fit zoom."""
+        self._platform_mode = mode
+        cw, ch, _ = self._PLATFORM_CELLS.get(mode, (1,1,256))
+        if self.dp5_canvas:
+            self.dp5_canvas.cell_w = cw
+            self.dp5_canvas.cell_h = ch
+            if mode != 'none':
+                self.dp5_canvas.show_cell_grid = True
+            self.dp5_canvas.update()
+        self.dp5_settings.set('platform_mode', mode)
+        _pal_map = {
+            'c64': 'C64', 'c64m': 'C64',
+            'spectrum': 'ZX Spectrum', 'specnext': 'ULA Plus',
+            'msx': 'MSX1', 'cpc': 'Amstrad CPC',
+            'atari_st': 'Atari ST', 'amiga': 'Amiga OCS',
+        }
+        if mode in _pal_map:
+            self._apply_retro_palette(_pal_map[mode])
+        if self.dp5_canvas and mode != 'none':
+            self._fit_canvas_to_viewport()
+        self._set_status(f"Platform: {mode.upper()}  cell {cw}×{ch}")
+
+    def _toggle_cell_grid(self): #vers 1
+        if not self.dp5_canvas: return
+        self.dp5_canvas.show_cell_grid = not self.dp5_canvas.show_cell_grid
+        self.dp5_canvas.update()
+
+    def _toggle_statusbar(self, on: bool): #vers 1
+        self.dp5_settings.set('show_statusbar', on)
+        self.dp5_settings.save()
+        if hasattr(self, '_status_bar'):
+            self._status_bar.setVisible(on)
+
+    def _toggle_colour_constraints(self): #vers 1
+        """Toggle enforcement of per-cell colour limits for current platform."""
+        self._enforce_constraints = not getattr(self, '_enforce_constraints', False)
+        self._set_status(f"Colour constraints: {'ON' if self._enforce_constraints else 'OFF'}")
 
     def _place_text_at(self, tx: int, ty: int):
         """Prompt for text string and paint it onto the canvas at tex coords."""
@@ -3315,6 +3912,43 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
     def _on_canvas_changed(self, x: int, y: int):
         if self.dp5_canvas:
             self._update_status(x, y, self.dp5_canvas.get_pixel(x, y))
+            if self._enforce_constraints and self._platform_mode != 'none':
+                self._apply_cell_constraint(x, y)
+
+    def _apply_cell_constraint(self, px: int, py: int): #vers 1
+        """Enforce platform max-colours-per-cell by quantizing the affected cell."""
+        if not self.dp5_canvas: return
+        cw, ch, max_c = self._PLATFORM_CELLS.get(self._platform_mode, (1,1,256))
+        if max_c >= 256: return
+        # Find cell origin
+        cx = (px // cw) * cw
+        cy = (py // ch) * ch
+        w = self.dp5_canvas.tex_w
+        h = self.dp5_canvas.tex_h
+        # Collect unique colours in cell
+        colours = {}
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if 0 <= tx < w and 0 <= ty < h:
+                    i = (ty*w+tx)*4
+                    key = tuple(self.dp5_canvas.rgba[i:i+3])
+                    colours[key] = colours.get(key, 0) + 1
+        if len(colours) <= max_c: return
+        # Keep the most frequent max_c colours, remap others to nearest kept
+        kept = sorted(colours, key=lambda k: -colours[k])[:max_c]
+        def nearest(c):
+            return min(kept, key=lambda k: (k[0]-c[0])**2+(k[1]-c[1])**2+(k[2]-c[2])**2)
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if 0 <= tx < w and 0 <= ty < h:
+                    i = (ty*w+tx)*4
+                    key = tuple(self.dp5_canvas.rgba[i:i+3])
+                    if key not in kept:
+                        nr = nearest(key)
+                        self.dp5_canvas.rgba[i:i+3] = list(nr)
+        self.dp5_canvas.update()
 
     def _update_status(self, x: int, y: int, colour: QColor):
         zoom = self._canvas_zoom
@@ -3363,6 +3997,24 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         for i in range(self._canvas_width * self._canvas_height):
             self.dp5_canvas.rgba[i*4:i*4+4] = [c.red(),c.green(),c.blue(),c.alpha()]
         self.dp5_canvas.update()
+
+    def _fit_canvas_to_viewport(self): #vers 1
+        if not self.dp5_canvas: return
+        sa = getattr(self, '_canvas_scroll', None)
+        vw = sa.viewport().width()  if sa else self.width()
+        vh = sa.viewport().height() if sa else self.height()
+        w = max(1, self.dp5_canvas.tex_w)
+        h = max(1, self.dp5_canvas.tex_h)
+        fit_z = min(vw / w, vh / h)
+        for snap in (16, 8, 4, 2, 1):
+            if fit_z >= snap:
+                fit_z = snap; break
+        self._set_zoom(max(0.05, fit_z))
+
+    def resizeEvent(self, event): #vers 1
+        super().resizeEvent(event)
+        if self.dp5_settings.get('zoom_to_fit_resize'):
+            self._fit_canvas_to_viewport()
 
     def _set_zoom(self, z, anchor_widget_pos=None):
         """
@@ -3422,6 +4074,72 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
                 self.dp5_canvas.rgba[i+j] = max(0, min(255,
                     self.dp5_canvas.rgba[i+j] + delta))
         self.dp5_canvas.update()
+
+    def _dither_floyd_steinberg(self): #vers 1
+        """Apply Floyd-Steinberg error-diffusion dither to canvas (reduces to 16 colours)."""
+        if not self.dp5_canvas: return
+        from PIL import Image
+        n, ok = QInputDialog.getInt(self, "Floyd-Steinberg Dither",
+                                    "Colours to reduce to:", 16, 2, 256)
+        if not ok: return
+        self._push_undo()
+        img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                               bytes(self.dp5_canvas.rgba)).convert('RGB')
+        # PIL quantize with dither=1 = Floyd-Steinberg
+        q = img.quantize(colors=n, dither=1).convert('RGB').convert('RGBA')
+        self.dp5_canvas.rgba = bytearray(q.tobytes())
+        self.dp5_canvas.update()
+        self._set_status(f"Floyd-Steinberg dither → {n} colours")
+
+    def _dither_bayer_canvas(self): #vers 1
+        """Apply 4×4 Bayer ordered dither to canvas."""
+        if not self.dp5_canvas: return
+        from PIL import Image
+        n, ok = QInputDialog.getInt(self, "Bayer Dither",
+                                    "Colours to reduce to:", 16, 2, 256)
+        if not ok: return
+        self._push_undo()
+        BAYER4 = [[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]]
+        img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                               bytes(self.dp5_canvas.rgba)).convert('RGB')
+        # Quantize first to get palette, then apply bayer threshold
+        q_pal = img.quantize(colors=n, dither=0)
+        pal_flat = q_pal.getpalette()
+        pal = [(pal_flat[i*3],pal_flat[i*3+1],pal_flat[i*3+2]) for i in range(n)]
+        px = list(img.getdata())
+        w,h = self._canvas_width, self._canvas_height
+        out = bytearray(w*h*4)
+        for y in range(h):
+            for x in range(w):
+                r,g,b = px[y*w+x]
+                t = BAYER4[y%4][x%4]/16.0
+                # Shift pixel value by threshold amount
+                sr = min(255,int(r + (t-0.5)*32))
+                sg = min(255,int(g + (t-0.5)*32))
+                sb = min(255,int(b + (t-0.5)*32))
+                best = min(pal, key=lambda c: (c[0]-sr)**2+(c[1]-sg)**2+(c[2]-sb)**2)
+                i = (y*w+x)*4
+                out[i:i+4] = [best[0],best[1],best[2],255]
+        self.dp5_canvas.rgba = out
+        self.dp5_canvas.update()
+        self._set_status(f"Bayer 4×4 dither → {n} colours")
+
+    def _dither_checker_canvas(self): #vers 1
+        """Apply checkerboard FG/BG dither to entire canvas."""
+        if not self.dp5_canvas: return
+        self._push_undo()
+        fg = self.dp5_canvas.color
+        bg = self._fgbg_swatch._bg if hasattr(self,'_fgbg_swatch') else QColor(0,0,0,255)
+        w,h = self._canvas_width, self._canvas_height
+        out = bytearray(self.dp5_canvas.rgba)
+        for y in range(h):
+            for x in range(w):
+                if (x+y)%2==0:
+                    i=(y*w+x)*4
+                    out[i:i+4]=[bg.red(),bg.green(),bg.blue(),bg.alpha()]
+        self.dp5_canvas.rgba = out
+        self.dp5_canvas.update()
+        self._set_status("Checkerboard dither applied")
 
     def _pil_transform(self, fn):
         """Apply a PIL Image transform to the canvas."""
@@ -3532,19 +4250,198 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self._pil_transform(lambda i, nw=nw, nh=nh, m=method:
                                 i.resize((nw, nh), m))
 
-    def _new_canvas(self):
-        w, ok1 = QInputDialog.getInt(self, "New Canvas", "Width:",  320, 8, 4096)
-        if not ok1: return
-        h, ok2 = QInputDialog.getInt(self, "New Canvas", "Height:", 200, 8, 4096)
-        if not ok2: return
+    def _new_canvas(self): #vers 3
+        """New canvas dialog with platform presets, custom size, and bit depth."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("New Canvas")
+        dlg.setMinimumWidth(340)
+        layout = QVBoxLayout(dlg)
+        form = QFormLayout()
+
+        # ── Platform preset ───────────────────────────────────────────────
+        PRESETS = [
+            ("Custom",                    0,    0),
+            ("── Amiga ──",               0,    0),
+            ("Amiga LowRes   320×256",  320,  256),
+            ("Amiga HiRes    640×256",  640,  256),
+            ("Amiga LowRes   320×200",  320,  200),
+            ("Amiga HiRes    640×200",  640,  200),
+            ("── Commodore 64 ──",         0,    0),
+            ("C64 Hires      320×200",  320,  200),
+            ("C64 Multicolor 160×200",  160,  200),
+            ("── ZX Spectrum ──",          0,    0),
+            ("Spectrum       256×192",  256,  192),
+            ("Spectrum Next  320×256",  320,  256),
+            ("── MSX ──",                  0,    0),
+            ("MSX1           256×192",  256,  192),
+            ("── Amstrad CPC ──",           0,    0),
+            ("CPC Mode 0     160×200",  160,  200),
+            ("CPC Mode 1     320×200",  320,  200),
+            ("CPC Mode 2     640×200",  640,  200),
+            ("── Atari ST ──",             0,    0),
+            ("Atari ST Low   320×200",  320,  200),
+            ("Atari ST Med   640×200",  640,  200),
+            ("── Plus/4 ──",               0,    0),
+            ("Plus/4 Hires   320×200",  320,  200),
+            ("Plus/4 Multi   160×200",  160,  200),
+            ("── VIC-20 ──",               0,    0),
+            ("VIC-20         176×184",  176,  184),
+            ("── Sinclair QL ──",           0,    0),
+            ("QL Low         256×256",  256,  256),
+            ("── Common ──",               0,    0),
+            ("Icon            16×16",    16,   16),
+            ("Icon            32×32",    32,   32),
+            ("Icon            48×48",    48,   48),
+            ("Icon            64×64",    64,   64),
+            ("Tile            16×16",    16,   16),
+            ("Sprite          32×64",    32,   64),
+            ("HD              1280×720", 1280, 720),
+            ("Full HD         1920×1080",1920,1080),
+            ("4K              3840×2160",3840,2160),
+        ]
+        preset_combo = QComboBox()
+        for name, w, h in PRESETS:
+            preset_combo.addItem(name, (w, h))
+        form.addRow("Platform preset:", preset_combo)
+
+        # ── Width / Height ────────────────────────────────────────────────
+        w_spin = QSpinBox(); w_spin.setRange(1, 4096)
+        w_spin.setValue(self.dp5_settings.get('default_width'))
+        form.addRow("Width:", w_spin)
+        h_spin = QSpinBox(); h_spin.setRange(1, 4096)
+        h_spin.setValue(self.dp5_settings.get('default_height'))
+        form.addRow("Height:", h_spin)
+
+        # ── Bit depth ─────────────────────────────────────────────────────
+        depth_combo = QComboBox()
+        depth_combo.addItems(["32-bit RGBA", "24-bit RGB", "16-bit (R5G6B5)", "8-bit indexed"])
+        form.addRow("Bit depth:", depth_combo)
+
+        # ── Fill colour ───────────────────────────────────────────────────
+        fill_combo = QComboBox()
+        fill_combo.addItems(["Grey (128,128,128)", "Black", "White", "Transparent"])
+        form.addRow("Fill:", fill_combo)
+
+        layout.addLayout(form)
+
+        # Wire preset → w/h spinboxes
+        def on_preset(idx):
+            w, h = preset_combo.itemData(idx)
+            if w > 0 and h > 0:
+                w_spin.setValue(w)
+                h_spin.setValue(h)
+        preset_combo.currentIndexChanged.connect(on_preset)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        ok  = QPushButton("Create"); ok.setDefault(True)
+        can = QPushButton("Cancel")
+        ok.clicked.connect(dlg.accept)
+        can.clicked.connect(dlg.reject)
+        btns.addWidget(ok); btns.addWidget(can)
+        layout.addLayout(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        w = w_spin.value()
+        h = h_spin.value()
+        fill_idx = fill_combo.currentIndex()
+        if   fill_idx == 0: fill = b'\x80\x80\x80\xff'
+        elif fill_idx == 1: fill = b'\x00\x00\x00\xff'
+        elif fill_idx == 2: fill = b'\xff\xff\xff\xff'
+        else:               fill = b'\x00\x00\x00\x00'
+
         self._canvas_width  = w
         self._canvas_height = h
+        self._canvas_bit_depth = depth_combo.currentIndex()
         if self.dp5_canvas:
             self.dp5_canvas.tex_w = w
             self.dp5_canvas.tex_h = h
-            self.dp5_canvas.rgba  = bytearray(b'\x80\x80\x80\xff' * (w * h))
+            self.dp5_canvas.rgba  = bytearray(fill * (w * h))
             self.dp5_canvas.update()
-        self._set_status(f"New canvas: {w}×{h}")
+            self._fit_canvas_to_viewport()
+        self._set_status(f"New canvas: {w}×{h}  {depth_combo.currentText()}")
+
+    def _crop_to_selection(self): #vers 1
+        """Crop canvas to the current selection rect."""
+        if not self.dp5_canvas: return
+        c = self.dp5_canvas
+        if not c._sel_active or not c._selection_rect:
+            self._set_status("No selection to crop to")
+            return
+        r = c._selection_rect
+        x, y, w, h = r.x(), r.y(), r.width(), r.height()
+        if w <= 0 or h <= 0: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA', (c.tex_w, c.tex_h), bytes(c.rgba))
+            cropped = img.crop((x, y, x + w, y + h))
+            c.tex_w, c.tex_h = w, h
+            self._canvas_width, self._canvas_height = w, h
+            c.rgba = bytearray(cropped.tobytes())
+            c._sel_active = False
+            c._selection_rect = None
+            c.update()
+            self._fit_canvas_to_viewport()
+            self._set_status(f"Cropped to {w}×{h}")
+        except Exception as e:
+            QMessageBox.warning(self, "Crop Error", str(e))
+
+    def _resize_canvas_dialog(self): #vers 2
+        """Resize canvas — single dialog with width, height, bit depth and resampling."""
+        if not self.dp5_canvas: return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Resize Canvas")
+        dlg.setMinimumWidth(280)
+        layout = QVBoxLayout(dlg)
+        form = QFormLayout()
+
+        w_spin = QSpinBox(); w_spin.setRange(1, 4096)
+        w_spin.setValue(self.dp5_canvas.tex_w)
+        form.addRow("Width:", w_spin)
+
+        h_spin = QSpinBox(); h_spin.setRange(1, 4096)
+        h_spin.setValue(self.dp5_canvas.tex_h)
+        form.addRow("Height:", h_spin)
+
+        depth_combo = QComboBox()
+        depth_combo.addItems(["32-bit RGBA", "24-bit RGB", "16-bit (R5G6B5)", "8-bit indexed"])
+        depth_combo.setCurrentIndex(getattr(self, '_canvas_bit_depth', 0))
+        form.addRow("Bit depth:", depth_combo)
+
+        resample_combo = QComboBox()
+        resample_combo.addItems(["Nearest (pixel perfect)", "Bilinear", "Lanczos"])
+        form.addRow("Resample:", resample_combo)
+
+        layout.addLayout(form)
+        btns = QHBoxLayout(); btns.addStretch()
+        ok = QPushButton("Resize"); ok.setDefault(True)
+        can = QPushButton("Cancel")
+        ok.clicked.connect(dlg.accept); can.clicked.connect(dlg.reject)
+        btns.addWidget(ok); btns.addWidget(can)
+        layout.addLayout(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
+
+        w = w_spin.value()
+        h = h_spin.value()
+        self._canvas_bit_depth = depth_combo.currentIndex()
+        resample_map = [0, 2, 1]  # NEAREST, BILINEAR, LANCZOS
+        from PIL import Image
+        resample = [Image.NEAREST, Image.BILINEAR, Image.LANCZOS][resample_combo.currentIndex()]
+        try:
+            img = Image.frombytes('RGBA', (self.dp5_canvas.tex_w, self.dp5_canvas.tex_h),
+                                  bytes(self.dp5_canvas.rgba))
+            resized = img.resize((w, h), resample)
+            self.dp5_canvas.tex_w, self.dp5_canvas.tex_h = w, h
+            self._canvas_width, self._canvas_height = w, h
+            self.dp5_canvas.rgba = bytearray(resized.tobytes())
+            self.dp5_canvas.update()
+            self._fit_canvas_to_viewport()
+            self._set_status(f"Resized to {w}×{h}  {depth_combo.currentText()}")
+        except Exception as e:
+            QMessageBox.warning(self, "Resize Error", str(e))
 
     # ── File I/O ──────────────────────────────────────────────────────────────
 
@@ -3615,10 +4512,22 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             show_left = self.dp5_settings.get('show_bitmap_list')
             if hasattr(self, '_left_panel'):
                 self._left_panel.setVisible(show_left)
+            if hasattr(self, '_status_bar'):
+                self._status_bar.setVisible(self.dp5_settings.get('show_statusbar'))
 
             if self.dp5_canvas:
                 self.dp5_canvas.show_grid = self.dp5_settings.get('show_pixel_grid')
+                self.dp5_canvas.show_cell_grid = self.dp5_settings.get('show_cell_grid')
                 self.dp5_canvas.update()
+                if self.dp5_settings.get('zoom_to_fit_resize'):
+                    self._fit_canvas_to_viewport()
+            self._set_platform(self.dp5_settings.get('platform_mode'))
+
+            if hasattr(self, '_menu_bar'):
+                show_mb = (self.dp5_settings.get('show_menubar') and
+                           self.dp5_settings.get('menu_style') == 'topbar')
+                self._menu_bar.setVisible(show_mb)
+                self._menu_bar.setMaximumHeight(0 if not show_mb else 30)
 
             # If icon size or column count changed, rebuild the right panel
             new_icon_sz = self.dp5_settings.get('tool_icon_size')
@@ -3677,7 +4586,857 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         except Exception as e:
             QMessageBox.warning(self, "IFF Export Error", str(e))
 
-    # ── Settings / theme ──────────────────────────────────────────────────────
+    def _export_scr(self): #vers 1
+        """Export ZX Spectrum SCR (256×192, 6144 bitmap + 768 attr bytes)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export ZX Spectrum SCR", "screen.scr", "SCR (*.scr)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((256, 192), Image.NEAREST)
+            # Quantize to ZX Spectrum 8 colours
+            zx_pal = [0,0,0, 215,0,0, 0,215,0, 215,215,0,
+                      0,0,215, 215,0,215, 0,215,215, 215,215,215]
+            pal_img = Image.new('P', (1,1))
+            pal_img.putpalette(zx_pal + [0]*768)
+            q = img.quantize(palette=pal_img, dither=0)
+            pixels = list(q.getdata())
+            # Build bitmap (6144 bytes) — ZX order: 8 rows of 8, per third
+            bitmap = bytearray(6144)
+            for third in range(3):
+                for row in range(8):
+                    for char_y in range(8):
+                        y = third*64 + char_y*8 + row
+                        for char_x in range(32):
+                            byte = 0
+                            for bit in range(8):
+                                px = pixels[y*256 + char_x*8 + bit]
+                                if px & 1:
+                                    byte |= (0x80 >> bit)
+                            addr = third*2048 + row*256 + char_y*32 + char_x
+                            bitmap[addr] = byte
+            # Build attrs (768 bytes) — simplified: ink=colour, paper=0
+            attrs = bytearray(768)
+            for ay in range(24):
+                for ax in range(32):
+                    px = pixels[(ay*8)*256 + ax*8]
+                    attrs[ay*32+ax] = px & 7
+            open(path, 'wb').write(bitmap + attrs)
+            self._set_status(f"Exported SCR: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "SCR Export Error", str(e))
+
+    def _export_sc2(self): #vers 1
+        """Export MSX SC2 raw (256×192, 6144 pattern + 6144 colour + 768 name)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export MSX SC2", "screen.sc2", "SC2 (*.sc2)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((256, 192), Image.NEAREST)
+            q = img.quantize(colors=16, dither=0)
+            pixels = list(q.getdata())
+            pal_flat = q.getpalette()
+            pattern = bytearray(6144)
+            colour  = bytearray(6144)
+            name    = bytearray(768)
+            for by in range(24):
+                for bx in range(32):
+                    name[by*32+bx] = by*32+bx
+                    for row in range(8):
+                        y = by*8+row
+                        idx = (by*32+bx)*8+row
+                        byte = 0
+                        fg = pixels[y*256+bx*8] & 0xF
+                        bg = 0
+                        for bit in range(8):
+                            px = pixels[y*256+bx*8+bit] & 0xF
+                            if px == fg:
+                                byte |= (0x80>>bit)
+                        pattern[idx] = byte
+                        colour[idx]  = (fg<<4)|bg
+            open(path,'wb').write(pattern+colour+name)
+            self._set_status(f"Exported SC2: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "SC2 Export Error", str(e))
+
+    def _export_pi1(self): #vers 1
+        """Export Atari ST Degas PI1 (320×200, 16 colours, 4 bitplanes)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Atari ST PI1", "image.pi1", "PI1 (*.pi1)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((320, 200), Image.NEAREST)
+            q = img.quantize(colors=16, dither=0)
+            pixels = list(q.getdata())
+            pal_flat = q.getpalette()
+            # Header: resolution word (0=low)
+            out = bytearray()
+            out += (0).to_bytes(2,'big')
+            # Palette: 16 × 3-nibble ST colour (0RGB, 3 bits each)
+            for i in range(16):
+                r = pal_flat[i*3]>>5
+                g = pal_flat[i*3+1]>>5
+                b = pal_flat[i*3+2]>>5
+                word = (r<<8)|(g<<4)|b
+                out += word.to_bytes(2,'big')
+            # Bitmap: 4 interleaved bitplanes, 80 bytes per row
+            for y in range(200):
+                for word_x in range(20):
+                    planes = [0,0,0,0]
+                    for bit in range(16):
+                        px = pixels[y*320 + word_x*16 + bit]
+                        for p in range(4):
+                            if px & (1<<p):
+                                planes[p] |= (0x8000>>bit)
+                    for p in range(4):
+                        out += planes[p].to_bytes(2,'big')
+            open(path,'wb').write(out)
+            self._set_status(f"Exported PI1: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "PI1 Export Error", str(e))
+
+    def _export_koala(self): #vers 1
+        """Export C64 Koala multicolour (160×200, 3 colours+bg per 4×8 cell)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export C64 Koala", "image.kla", "Koala (*.kla)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((160, 200), Image.NEAREST)
+            q = img.quantize(colors=16, dither=0)
+            pixels = list(q.getdata())
+            # Koala: 2-byte load addr + 8000 bitmap + 1000 screen + 1000 colram + 1 bg
+            out = bytearray(b'\x00\x60')  # load address $6000
+            # Bitmap: 8000 bytes, each byte = 4 pairs of 2-bit colour indices
+            bitmap = bytearray(8000)
+            screen = bytearray(1000)
+            colram = bytearray(1000)
+            for cell_y in range(25):
+                for cell_x in range(40):
+                    cell_idx = cell_y*40+cell_x
+                    # collect colours in this cell
+                    cell_colours = {}
+                    for row in range(8):
+                        for col in range(2):  # 2 pixels wide per nibble in 160px
+                            px = pixels[(cell_y*8+row)*160 + cell_x*2+col]
+                            cell_colours[px] = cell_colours.get(px,0)+1
+                    # most common = screen colour, second = colram
+                    sorted_c = sorted(cell_colours, key=lambda k: -cell_colours[k])
+                    bg = 0
+                    c1 = sorted_c[0] if len(sorted_c)>0 else 0
+                    c2 = sorted_c[1] if len(sorted_c)>1 else 0
+                    c3 = sorted_c[2] if len(sorted_c)>2 else 0
+                    screen[cell_idx] = (c1<<4)|c2
+                    colram[cell_idx] = c3 & 0xF
+                    colour_map = {bg:0, c1:1, c2:2, c3:3}
+                    for row in range(8):
+                        byte = 0
+                        for col in range(4):
+                            px = pixels[(cell_y*8+row)*160 + cell_x*4+col] if cell_x*4+col < 160 else 0
+                            pair = colour_map.get(px, 0)
+                            byte = (byte<<2)|pair
+                        bitmap[cell_idx*8+row] = byte
+            out += bitmap + screen + colram + bytearray(b'\x00')
+            open(path,'wb').write(out)
+            self._set_status(f"Exported Koala: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Koala Export Error", str(e))
+
+    def _export_art_studio(self): #vers 1
+        """Export C64 Art Studio hires (320×200, 2 colours per 8×8 cell)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export C64 Art Studio", "image.art", "Art Studio (*.art)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((320, 200), Image.NEAREST)
+            q = img.quantize(colors=16, dither=0)
+            pixels = list(q.getdata())
+            # Art Studio: 2-byte header + 8000 bitmap + 1000 colour + 1 border + 6 footer
+            out = bytearray(b'\x00\x20')  # load $2000
+            bitmap = bytearray(8000)
+            colour = bytearray(1000)
+            for cell_y in range(25):
+                for cell_x in range(40):
+                    cell_idx = cell_y*40+cell_x
+                    cell_pxs = [pixels[(cell_y*8+r)*320+cell_x*8+c]
+                                 for r in range(8) for c in range(8)]
+                    counts = {}
+                    for p in cell_pxs: counts[p]=counts.get(p,0)+1
+                    sorted_c = sorted(counts, key=lambda k:-counts[k])
+                    fg = sorted_c[0] if sorted_c else 0
+                    bg = sorted_c[1] if len(sorted_c)>1 else 0
+                    colour[cell_idx] = (fg<<4)|bg
+                    for row in range(8):
+                        byte = 0
+                        for bit in range(8):
+                            px = pixels[(cell_y*8+row)*320+cell_x*8+bit]
+                            if px == fg: byte |= (0x80>>bit)
+                        bitmap[cell_idx*8+row] = byte
+            out += bitmap + colour + b'\x00' + b'\x4D\x20\x27\x53\x54\x55'
+            open(path,'wb').write(out)
+            self._set_status(f"Exported Art Studio: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Art Studio Export Error", str(e))
+
+    # ── Platform format imports ───────────────────────────────────────────────
+
+    def _import_scr(self): #vers 1
+        """Import ZX Spectrum SCR (6144 bitmap + 768 attr bytes → 256×192 RGBA)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import ZX Spectrum SCR", "", "SCR (*.scr);;All Files (*)")
+        if not path: return
+        try:
+            data = open(path,'rb').read()
+            if len(data) < 6912:
+                raise ValueError(f"SCR too small: {len(data)} bytes")
+            bitmap = data[:6144]; attrs = data[6144:6912]
+            ZX_COLS = [
+                (0,0,0),(215,0,0),(0,215,0),(215,215,0),
+                (0,0,215),(215,0,215),(0,215,215),(215,215,215),
+                (0,0,0),(255,0,0),(0,255,0),(255,255,0),
+                (0,0,255),(255,0,255),(0,255,255),(255,255,255),
+            ]
+            w,h = 256,192
+            rgba = bytearray(w*h*4)
+            for ay in range(24):
+                for ax in range(32):
+                    attr = attrs[ay*32+ax]
+                    bright = (attr>>6)&1
+                    ink   = (attr&7) + (8 if bright else 0)
+                    paper = ((attr>>3)&7) + (8 if bright else 0)
+                    ink_c   = ZX_COLS[ink]
+                    paper_c = ZX_COLS[paper]
+                    for row in range(8):
+                        y = ay*8+row
+                        # ZX addressing: third/row/char
+                        third   = y//64
+                        char_y  = (y%64)//8
+                        scan    = y%8
+                        baddr   = third*2048 + scan*256 + char_y*32 + ax
+                        byte    = bitmap[baddr]
+                        for bit in range(8):
+                            x = ax*8+bit
+                            on = (byte >> (7-bit)) & 1
+                            c = ink_c if on else paper_c
+                            i = (y*w+x)*4
+                            rgba[i:i+4] = [c[0],c[1],c[2],255]
+            self._load_rgba(rgba, w, h, os.path.basename(path))
+        except Exception as e:
+            QMessageBox.warning(self, "SCR Import Error", str(e))
+
+    def _import_sc2(self): #vers 1
+        """Import MSX SC2 (pattern+colour+name tables → 256×192 RGBA)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import MSX SC2", "", "SC2 (*.sc2);;All Files (*)")
+        if not path: return
+        try:
+            data = open(path,'rb').read()
+            if len(data) < 13312: raise ValueError("SC2 too small")
+            pattern = data[:6144]; colour = data[6144:12288]
+            w,h = 256,192
+            rgba = bytearray(w*h*4)
+            MSX_PAL = [
+                (0,0,0),(0,0,0),(62,184,73),(116,208,128),
+                (89,85,224),(128,118,241),(185,94,81),(101,219,239),
+                (219,101,89),(255,137,125),(204,195,94),(222,208,135),
+                (58,162,65),(183,102,181),(204,204,204),(255,255,255),
+            ]
+            for by in range(24):
+                for bx in range(32):
+                    for row in range(8):
+                        y = by*8+row
+                        idx = (by*32+bx)*8+row
+                        pat_byte  = pattern[idx]
+                        col_byte  = colour[idx]
+                        fg_idx = (col_byte>>4)&0xF
+                        bg_idx = col_byte&0xF
+                        fg = MSX_PAL[fg_idx]; bg = MSX_PAL[bg_idx]
+                        for bit in range(8):
+                            x = bx*8+bit
+                            on = (pat_byte>>(7-bit))&1
+                            c = fg if on else bg
+                            i = (y*w+x)*4
+                            rgba[i:i+4] = [c[0],c[1],c[2],255]
+            self._load_rgba(rgba, w, h, os.path.basename(path))
+        except Exception as e:
+            QMessageBox.warning(self, "SC2 Import Error", str(e))
+
+    def _import_pi1(self): #vers 1
+        """Import Atari ST Degas PI1 (320×200, 4 bitplanes) → RGBA."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Atari ST PI1", "", "PI1 (*.pi1);;All Files (*)")
+        if not path: return
+        try:
+            data = open(path,'rb').read()
+            if len(data) < 32034: raise ValueError("PI1 too small")
+            # Parse 16-colour palette (words at offset 2)
+            pal = []
+            for i in range(16):
+                word = (data[2+i*2]<<8)|data[3+i*2]
+                r = ((word>>8)&7)*36; g = ((word>>4)&7)*36; b = (word&7)*36
+                pal.append((r,g,b))
+            # Bitmap: 4 interleaved bitplanes, 16-bit words
+            w,h = 320,200
+            rgba = bytearray(w*h*4)
+            offset = 34
+            for y in range(200):
+                for word_x in range(20):
+                    planes = []
+                    for p in range(4):
+                        planes.append((data[offset]<<8)|data[offset+1])
+                        offset += 2
+                    for bit in range(16):
+                        x = word_x*16+bit
+                        px = 0
+                        for p in range(4):
+                            if planes[p] & (0x8000>>bit):
+                                px |= (1<<p)
+                        c = pal[px]
+                        i = (y*w+x)*4
+                        rgba[i:i+4] = [c[0],c[1],c[2],255]
+            self._load_rgba(rgba, w, h, os.path.basename(path))
+        except Exception as e:
+            QMessageBox.warning(self, "PI1 Import Error", str(e))
+
+    def _import_koala(self): #vers 1
+        """Import C64 Koala multicolour (160×200) → RGBA."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import C64 Koala", "", "Koala (*.kla *.koa);;All Files (*)")
+        if not path: return
+        try:
+            data = open(path,'rb').read()
+            # May have 2-byte load address prefix
+            offset = 2 if len(data) == 10003 else 0
+            bitmap = data[offset:offset+8000]
+            screen = data[offset+8000:offset+9000]
+            colram = data[offset+9000:offset+10000]
+            bg     = data[offset+10000] & 0xF
+            C64_PAL = [
+                (0,0,0),(255,255,255),(136,0,0),(170,255,238),
+                (204,68,204),(0,204,85),(0,0,170),(238,238,119),
+                (221,136,85),(102,68,0),(255,119,119),(51,51,51),
+                (119,119,119),(170,255,102),(0,136,255),(187,187,187),
+            ]
+            w,h = 160,200
+            rgba = bytearray(w*h*4)
+            for cell_y in range(25):
+                for cell_x in range(40):
+                    cell_idx = cell_y*40+cell_x
+                    sc = screen[cell_idx]
+                    c1 = (sc>>4)&0xF; c2 = sc&0xF
+                    c3 = colram[cell_idx]&0xF
+                    colour_map = {0:C64_PAL[bg],1:C64_PAL[c1],2:C64_PAL[c2],3:C64_PAL[c3]}
+                    for row in range(8):
+                        byte = bitmap[cell_idx*8+row]
+                        for col in range(4):
+                            pair = (byte>>(6-col*2))&3
+                            c = colour_map[pair]
+                            x = cell_x*4+col; y = cell_y*8+row
+                            i = (y*w+x)*4
+                            rgba[i:i+4] = [c[0],c[1],c[2],255]
+            self._load_rgba(rgba, w, h, os.path.basename(path))
+        except Exception as e:
+            QMessageBox.warning(self, "Koala Import Error", str(e))
+
+    def _import_art_studio(self): #vers 1
+        """Import C64 Art Studio hires (320×200) → RGBA."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import C64 Art Studio", "", "Art Studio (*.art);;All Files (*)")
+        if not path: return
+        try:
+            data = open(path,'rb').read()
+            offset = 2  # skip load address
+            bitmap = data[offset:offset+8000]
+            colour = data[offset+8000:offset+9000]
+            C64_PAL = [
+                (0,0,0),(255,255,255),(136,0,0),(170,255,238),
+                (204,68,204),(0,204,85),(0,0,170),(238,238,119),
+                (221,136,85),(102,68,0),(255,119,119),(51,51,51),
+                (119,119,119),(170,255,102),(0,136,255),(187,187,187),
+            ]
+            w,h = 320,200
+            rgba = bytearray(w*h*4)
+            for cell_y in range(25):
+                for cell_x in range(40):
+                    cell_idx = cell_y*40+cell_x
+                    col_byte = colour[cell_idx]
+                    fg = C64_PAL[(col_byte>>4)&0xF]
+                    bg = C64_PAL[col_byte&0xF]
+                    for row in range(8):
+                        byte = bitmap[cell_idx*8+row]
+                        for bit in range(8):
+                            on = (byte>>(7-bit))&1
+                            c = fg if on else bg
+                            x = cell_x*8+bit; y = cell_y*8+row
+                            i = (y*w+x)*4
+                            rgba[i:i+4] = [c[0],c[1],c[2],255]
+            self._load_rgba(rgba, w, h, os.path.basename(path))
+        except Exception as e:
+            QMessageBox.warning(self, "Art Studio Import Error", str(e))
+
+    def _load_rgba(self, rgba: bytearray, w: int, h: int, name: str = ""): #vers 1
+        """Load raw RGBA data into canvas, update palette, fit zoom."""
+        if not self.dp5_canvas: return
+        self._canvas_width = w; self._canvas_height = h
+        self.dp5_canvas.tex_w = w; self.dp5_canvas.tex_h = h
+        self.dp5_canvas.rgba = rgba
+        self.dp5_canvas.update()
+        self._fit_canvas_to_viewport()
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA', (w,h), bytes(rgba)).convert('RGB')
+            p = img.quantize(colors=256)
+            pf = p.getpalette()
+            self.pal_bar.set_palette_raw([(pf[i*3],pf[i*3+1],pf[i*3+2]) for i in range(256)])
+        except Exception:
+            pass
+        if name:
+            self._bitmap_list.append({'name':name,'rgba':rgba,'w':w,'h':h})
+            self._bitmap_lw.addItem(name)
+            self._bitmap_lw.setCurrentRow(len(self._bitmap_list)-1)
+        self._set_status(f"Loaded: {name}  {w}×{h}")
+
+    # ── Executable exports ────────────────────────────────────────────────────
+
+    def _export_tap(self): #vers 1
+        """Export ZX Spectrum TAP — screen$ block (6912 bytes) wrapped in TAP format."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export ZX Spectrum TAP", "screen.tap", "TAP (*.tap)")
+        if not path: return
+        try:
+            # First generate SCR data
+            from PIL import Image
+            img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((256,192), Image.NEAREST)
+            zx_pal = [0,0,0,215,0,0,0,215,0,215,215,0,0,0,215,215,0,215,0,215,215,215,215,215]
+            pi = Image.new('P',(1,1)); pi.putpalette(zx_pal+[0]*744)
+            q = img.quantize(palette=pi, dither=0)
+            pixels = list(q.getdata())
+            bitmap = bytearray(6144); attrs = bytearray(768)
+            for third in range(3):
+                for row in range(8):
+                    for char_y in range(8):
+                        y = third*64+char_y*8+row
+                        for char_x in range(32):
+                            byte = 0
+                            for bit in range(8):
+                                if pixels[y*256+char_x*8+bit]&1:
+                                    byte |= (0x80>>bit)
+                            bitmap[third*2048+row*256+char_y*32+char_x] = byte
+            for ay in range(24):
+                for ax in range(32):
+                    attrs[ay*32+ax] = pixels[(ay*8)*256+ax*8]&7
+            scr = bitmap+attrs
+            # Wrap in TAP: header block + data block
+            def tap_block(flag, data):
+                payload = bytes([flag])+bytes(data)
+                chk = 0
+                for b in payload: chk ^= b
+                block = payload + bytes([chk])
+                return len(block).to_bytes(2,'little') + block
+            # Header: type 3 (CODE), filename "SCREEN$   ", length 6912, param1 16384, param2 32768
+            hdr  = bytes([3])+b'SCREEN$   '+bytes([0,27,0,0,64,0,128])
+            tap  = tap_block(0, hdr) + tap_block(0xFF, scr)
+            open(path,'wb').write(tap)
+            self._set_status(f"Exported TAP: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "TAP Export Error", str(e))
+
+    def _export_c64prg(self): #vers 1
+        """Export C64 hires PRG — Art Studio bitmap wrapped with BASIC loader."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export C64 PRG (hires)", "image.prg", "PRG (*.prg)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((320,200),Image.NEAREST)
+            q = img.quantize(colors=16,dither=0)
+            pixels = list(q.getdata())
+            bitmap = bytearray(8000); colour = bytearray(1000)
+            for cy in range(25):
+                for cx in range(40):
+                    ci = cy*40+cx
+                    cell = [pixels[(cy*8+r)*320+cx*8+c] for r in range(8) for c in range(8)]
+                    counts = {}
+                    for p in cell: counts[p]=counts.get(p,0)+1
+                    sc = sorted(counts,key=lambda k:-counts[k])
+                    fg = sc[0] if sc else 0; bg = sc[1] if len(sc)>1 else 0
+                    colour[ci] = (fg<<4)|bg
+                    for row in range(8):
+                        byte = 0
+                        for bit in range(8):
+                            if pixels[(cy*8+row)*320+cx*8+bit]==fg: byte|=(0x80>>bit)
+                        bitmap[ci*8+row] = byte
+            # BASIC loader stub at $0801
+            basic = bytearray(b'\x01\x08\x0b\x08\x00\x00\x9e\x32\x30\x36\x31\x00\x00\x00')
+            # Bitmap at $2000, colour at $6800
+            prg  = b'\x01\x08' + basic
+            prg += b'\x00\x20' + bitmap  # bitmap load addr $2000
+            prg += b'\x00\x68' + colour  # colour load addr $6800
+            open(path,'wb').write(prg)
+            self._set_status(f"Exported C64 PRG: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "C64 PRG Export Error", str(e))
+
+    def _export_c64mprg(self): #vers 1
+        """Export C64 multicolour PRG — Koala bitmap wrapped with BASIC loader."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export C64 PRG (multicolour)", "image_m.prg", "PRG (*.prg)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((160,200),Image.NEAREST)
+            q = img.quantize(colors=16,dither=0)
+            pixels = list(q.getdata())
+            bitmap=bytearray(8000); screen=bytearray(1000); colram=bytearray(1000)
+            bg=0
+            for cy in range(25):
+                for cx in range(40):
+                    ci=cy*40+cx
+                    cell_c={}
+                    for row in range(8):
+                        for col in range(4):
+                            p=pixels[(cy*8+row)*160+cx*4+col] if cx*4+col<160 else 0
+                            cell_c[p]=cell_c.get(p,0)+1
+                    sc=sorted(cell_c,key=lambda k:-cell_c[k])
+                    c1=sc[0] if sc else 0; c2=sc[1] if len(sc)>1 else 0; c3=sc[2] if len(sc)>2 else 0
+                    screen[ci]=(c1<<4)|c2; colram[ci]=c3&0xF
+                    cm={bg:0,c1:1,c2:2,c3:3}
+                    for row in range(8):
+                        byte=0
+                        for col in range(4):
+                            p=pixels[(cy*8+row)*160+cx*4+col] if cx*4+col<160 else 0
+                            byte=(byte<<2)|cm.get(p,0)
+                        bitmap[ci*8+row]=byte
+            basic=bytearray(b'\x01\x08\x0b\x08\x00\x00\x9e\x32\x30\x36\x31\x00\x00\x00')
+            prg=b'\x01\x08'+basic+b'\x00\x60'+bitmap+screen+colram+bytes([bg])
+            open(path,'wb').write(prg)
+            self._set_status(f"Exported C64 Multi PRG: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "C64 Multi PRG Error", str(e))
+
+    def _export_msxcom(self): #vers 1
+        """Export MSX COM — SC2 data as a relocatable COM executable."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export MSX COM", "image.com", "COM (*.com)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((256,192),Image.NEAREST)
+            q = img.quantize(colors=16,dither=0)
+            pixels = list(q.getdata())
+            pal_flat=q.getpalette()
+            pattern=bytearray(6144); colour=bytearray(6144); name=bytearray(768)
+            for by in range(24):
+                for bx in range(32):
+                    name[by*32+bx]=by*32+bx
+                    for row in range(8):
+                        y=by*8+row; idx=(by*32+bx)*8+row
+                        byte=0; fg=pixels[y*256+bx*8]&0xF; bg=0
+                        for bit in range(8):
+                            if pixels[y*256+bx*8+bit]&0xF==fg: byte|=(0x80>>bit)
+                        pattern[idx]=byte; colour[idx]=(fg<<4)|bg
+            # Minimal Z80 stub: SCREEN 2, BLOAD, RET
+            stub = bytearray(b'\xCD\x01\x00\xC9')  # placeholder CALL/RET
+            com  = stub + pattern + colour + name
+            open(path,'wb').write(com)
+            self._set_status(f"Exported MSX COM: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "MSX COM Error", str(e))
+
+    def _export_plus4prg(self): #vers 1
+        """Export Plus/4 PRG — hires bitmap with BASIC loader."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Plus/4 PRG", "image.prg", "PRG (*.prg)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((320,200),Image.NEAREST)
+            q = img.quantize(colors=16,dither=0)
+            pixels = list(q.getdata())
+            bitmap=bytearray(8000); colour=bytearray(1000)
+            for cy in range(25):
+                for cx in range(40):
+                    ci=cy*40+cx
+                    cell=[pixels[(cy*8+r)*320+cx*8+c] for r in range(8) for c in range(8)]
+                    counts={}
+                    for p in cell: counts[p]=counts.get(p,0)+1
+                    sc=sorted(counts,key=lambda k:-counts[k])
+                    fg=sc[0] if sc else 0; bg=sc[1] if len(sc)>1 else 0
+                    colour[ci]=(fg<<4)|bg
+                    for row in range(8):
+                        byte=0
+                        for bit in range(8):
+                            if pixels[(cy*8+row)*320+cx*8+bit]==fg: byte|=(0x80>>bit)
+                        bitmap[ci*8+row]=byte
+            # Plus/4 BASIC: SYS 7169
+            basic=b'\x01\x10\x0c\x10\x00\x00\x9e\x37\x31\x36\x39\x00\x00\x00'
+            prg=b'\x01\x10'+basic+b'\x00\x1c'+bitmap+colour
+            open(path,'wb').write(prg)
+            self._set_status(f"Exported Plus/4 PRG: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Plus/4 PRG Error", str(e))
+
+    def _export_vicprg(self): #vers 1
+        """Export VIC-20 PRG — raw bitmap with BASIC loader."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export VIC-20 PRG", "image.prg", "PRG (*.prg)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((176,184),Image.NEAREST)
+            q = img.quantize(colors=16,dither=0)
+            pixels = list(q.getdata())
+            w,h = 176,184
+            bitmap = bytearray(w*h//8 * 8)
+            for y in range(h):
+                for xb in range(w//8):
+                    byte=0
+                    for bit in range(8):
+                        if pixels[y*w+xb*8+bit]&1: byte|=(0x80>>bit)
+                    bitmap[y*(w//8)+xb]=byte
+            basic=b'\x01\x10\x0c\x10\x00\x00\x9e\x34\x39\x31\x35\x00\x00\x00'
+            prg=b'\x01\x10'+basic+b'\x00\x10'+bitmap
+            open(path,'wb').write(prg)
+            self._set_status(f"Exported VIC-20 PRG: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "VIC-20 PRG Error", str(e))
+
+    # ── ZX Spectrum Next formats ──────────────────────────────────────────────
+
+    def _rgb_to_9bit(self, r: int, g: int, b: int):
+        """Convert 8-bit RGB to ZX Next 9-bit palette bytes (RRRGGGBB + B LSB)."""
+        r3 = r // 36; g3 = g // 36; b3 = b // 36
+        hi = (r3 << 5) | (g3 << 2) | (b3 >> 1)
+        lo = b3 & 1
+        return hi, lo
+
+    def _9bit_to_rgb(self, hi: int, lo: int):
+        """Convert ZX Next 9-bit palette bytes back to 8-bit RGB."""
+        r3 = (hi >> 5) & 7; g3 = (hi >> 2) & 7; b3 = ((hi & 3) << 1) | (lo & 1)
+        # Scale 3-bit to 8-bit: val*36 + val//2
+        r = r3*36 + r3//2; g = g3*36 + g3//2; b = b3*36 + b3//2
+        return min(255,r), min(255,g), min(255,b)
+
+    def _canvas_to_256colour_indexed(self, w: int, h: int):
+        """Quantize canvas to 256 colours, return (pixels_list, palette_rgb_list)."""
+        from PIL import Image
+        img = Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                              bytes(self.dp5_canvas.rgba)).convert('RGB')
+        img = img.resize((w, h), Image.NEAREST)
+        q = img.quantize(colors=256, dither=0)
+        pixels = list(q.getdata())
+        pf = q.getpalette()
+        palette = [(pf[i*3], pf[i*3+1], pf[i*3+2]) for i in range(256)]
+        return pixels, palette
+
+    def _export_nxi(self): #vers 1
+        """Export ZX Spectrum Next NXI (256×192 or 320×256, 9-bit palette + indexed pixels)."""
+        if not self.dp5_canvas: return
+        # Ask mode
+        mode_dlg = QDialog(self)
+        mode_dlg.setWindowTitle("NXI Export Mode")
+        vl = QVBoxLayout(mode_dlg)
+        vl.addWidget(QLabel("Select resolution:"))
+        combo = QComboBox()
+        combo.addItems(["256×192 (ZX Spectrum Next 256)", "320×256 (ZX Spectrum Next 320)"])
+        vl.addWidget(combo)
+        btns = QHBoxLayout(); ok=QPushButton("OK"); can=QPushButton("Cancel")
+        ok.clicked.connect(mode_dlg.accept); can.clicked.connect(mode_dlg.reject)
+        btns.addStretch(); btns.addWidget(ok); btns.addWidget(can)
+        vl.addLayout(btns)
+        if mode_dlg.exec() != QDialog.DialogCode.Accepted: return
+        is_320 = combo.currentIndex() == 1
+        w, h = (320, 256) if is_320 else (256, 192)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export ZX Next NXI", "image.nxi", "NXI (*.nxi)")
+        if not path: return
+        try:
+            pixels, palette = self._canvas_to_256colour_indexed(w, h)
+            out = bytearray()
+            # 9-bit palette: 256 × 2 bytes = 512 bytes
+            for r, g, b in palette:
+                hi, lo = self._rgb_to_9bit(r, g, b)
+                out += bytes([hi, lo])
+            # Pixel data
+            if is_320:
+                # 320-mode: column-major order
+                grid = [pixels[y*w+x] for x in range(w) for y in range(h)]
+                out += bytes(grid)
+            else:
+                out += bytes(pixels)
+            open(path, 'wb').write(out)
+            self._set_status(f"Exported NXI: {os.path.basename(path)}  {w}×{h}")
+        except Exception as e:
+            QMessageBox.warning(self, "NXI Export Error", str(e))
+
+    def _import_nxi(self): #vers 1
+        """Import ZX Spectrum Next NXI file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import ZX Next NXI", "", "NXI (*.nxi);;All Files (*)")
+        if not path: return
+        try:
+            data = open(path, 'rb').read()
+            size = len(data)
+            # Detect mode by file size
+            # 256×192 + palette: 512+49152=49664  without palette: 49152
+            # 320×256 + palette: 512+81920=82432  without palette: 81920
+            has_pal = size in (49664, 82432)
+            is_320  = size in (81920, 82432)
+            w, h = (320, 256) if is_320 else (256, 192)
+            offset = 0
+            palette = None
+            if has_pal:
+                palette = []
+                for i in range(256):
+                    hi = data[i*2]; lo = data[i*2+1]
+                    palette.append(self._9bit_to_rgb(hi, lo))
+                offset = 512
+            pixel_bytes = data[offset:]
+            rgba = bytearray(w*h*4)
+            if palette is None:
+                # No palette — use greyscale index
+                palette = [(i, i, i) for i in range(256)]
+            if is_320:
+                # Column-major → row-major
+                for xi in range(w):
+                    for yi in range(h):
+                        p = pixel_bytes[xi*h+yi]
+                        c = palette[p % len(palette)]
+                        i = (yi*w+xi)*4
+                        rgba[i:i+4] = [c[0],c[1],c[2],255]
+            else:
+                for idx, p in enumerate(pixel_bytes[:w*h]):
+                    c = palette[p % len(palette)]
+                    i = idx*4
+                    rgba[i:i+4] = [c[0],c[1],c[2],255]
+            self._load_rgba(rgba, w, h, os.path.basename(path))
+            # Load palette into user palette grid
+            if palette:
+                self._user_pal_grid.set_palette_raw(palette)
+        except Exception as e:
+            QMessageBox.warning(self, "NXI Import Error", str(e))
+
+    def _export_pal(self): #vers 1
+        """Export ZX Spectrum Next 9-bit PAL palette (512 bytes)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export ZX Next PAL", "palette.pal", "PAL (*.pal)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            q = img.quantize(colors=256, dither=0)
+            pf = q.getpalette()
+            out = bytearray()
+            for i in range(256):
+                r, g, b = pf[i*3], pf[i*3+1], pf[i*3+2]
+                hi, lo = self._rgb_to_9bit(r, g, b)
+                out += bytes([hi, lo])
+            open(path, 'wb').write(out)
+            self._set_status(f"Exported PAL: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "PAL Export Error", str(e))
+
+    def _import_pal(self): #vers 1
+        """Import ZX Spectrum Next 9-bit PAL palette into user palette grid."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import ZX Next PAL", "", "PAL (*.pal);;All Files (*)")
+        if not path: return
+        try:
+            data = open(path, 'rb').read()
+            if len(data) != 512:
+                raise ValueError(f"PAL must be 512 bytes, got {len(data)}")
+            palette = []
+            for i in range(256):
+                hi = data[i*2]; lo = data[i*2+1]
+                palette.append(self._9bit_to_rgb(hi, lo))
+            self._user_pal_grid.set_palette_raw(palette)
+            self._retro_btn.setText("ZX Next PAL")
+            self._set_status(f"Loaded PAL: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "PAL Import Error", str(e))
+
+    def _export_nex(self): #vers 1
+        """Export ZX Spectrum Next NEX executable (loading screen, 256×192)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export ZX Next NEX", "image.nex", "NEX (*.nex)")
+        if not path: return
+        try:
+            pixels, palette = self._canvas_to_256colour_indexed(256, 192)
+            # 512-byte NEX header
+            hdr = bytearray(512)
+            hdr[0:4]   = b'Next'
+            hdr[4:8]   = b'V1.1'
+            hdr[8]     = 0        # RAM required
+            hdr[9]     = 4        # number of banks
+            hdr[10]    = 0        # loading screen blocks = Layer2 w/palette
+            hdr[11]    = 0        # border colour
+            hdr[12:14] = b'\x80\x80'  # SP=$8000
+            hdr[14:16] = b'\x00\x80'  # PC=$8000
+            hdr[16:18] = (0).to_bytes(2, 'little')  # extra files
+            # Bank flags: banks 0,9,10,11 included (bitmap at 0, palette+code at 9-11)
+            bank_flags = [0]*112
+            bank_flags[0]=1; bank_flags[9]=1; bank_flags[10]=1; bank_flags[11]=1
+            hdr[18:18+112] = bytearray(bank_flags)
+            hdr[130]   = 0   # loading bar
+            hdr[131]   = 7   # loading bar colour (white)
+            # 9-bit palette (512 bytes) — goes in bank 9
+            pal_data = bytearray()
+            for r, g, b in palette:
+                hi, lo = self._rgb_to_9bit(r, g, b)
+                pal_data += bytes([hi, lo])
+            # Pixel data (49152 bytes = 3 × 16K banks)
+            pix_data = bytearray(pixels[:49152])
+            # Simple Z80 code stub in bank 9 after palette: waits for keypress, loops
+            z80_stub = bytearray(b'\xFB\x76\xC3\x00\x80')  # EI; HALT; JP $8000
+            bank9 = pal_data + z80_stub + bytearray(16384 - len(pal_data) - len(z80_stub))
+            bank10 = pix_data[:16384]
+            bank11 = pix_data[16384:32768] + bytearray(16384-(len(pix_data)-16384))
+            bank0  = pix_data[32768:49152] + bytearray(16384-(len(pix_data)-32768))
+            out = bytes(hdr) + bytes(bank0) + bytes(bank9) + bytes(bank10) + bytes(bank11)
+            open(path, 'wb').write(out)
+            self._set_status(f"Exported NEX: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "NEX Export Error", str(e))
 
     def _apply_theme(self):
         try:
@@ -3980,9 +5739,8 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         painter.end()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  Public factory function
-# ══════════════════════════════════════════════════════════════════════════════
 
 def open_dp5_workshop(main_window=None) -> DP5Workshop:
     """Open DP5 Workshop standalone or embedded."""
@@ -4004,9 +5762,8 @@ def open_dp5_workshop(main_window=None) -> DP5Workshop:
         return None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+
 #  Standalone entry point
-# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import traceback
@@ -4021,7 +5778,10 @@ if __name__ == "__main__":
         # Set app icon — appears in taskbar, alt-tab, dock
         try:
             from apps.methods.imgfactory_svg_icons import get_dp5_workshop_icon
-            app_icon = get_dp5_workshop_icon(64)
+            app_icon = QIcon()
+            for sz in (16, 32, 48, 64, 128):
+                ico = get_dp5_workshop_icon(sz)
+                app_icon.addPixmap(ico.pixmap(sz, sz))
             app.setWindowIcon(app_icon)
         except Exception:
             pass
