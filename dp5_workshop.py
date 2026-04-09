@@ -717,7 +717,9 @@ class DP5SettingsDialog(QDialog):
 
         self._platform_combo = QComboBox()
         self._platform_combo.addItems([
-            'none','amiga','c64','c64m','spectrum','msx','cpc','atari_st'])
+            'none','amiga','amiga_aga','amiga_ham','amiga_ham8','amiga_rtg',
+            'c64','c64m','spectrum','specnext',
+            'msx','cpc','cpc1','atari_st','plus4','vic20'])
         self._platform_combo.setCurrentText(self.s.get('platform_mode'))
         cl.addRow("Platform mode:", self._platform_combo)
 
@@ -3012,6 +3014,7 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         xe = fm.addMenu("Export Executable")
         xe.addAction("ZX Spectrum TAP…",   self._export_tap)
         xe.addAction("ZX Next NEX…",       self._export_nex)
+        xe.addAction("Amiga IFF HAM…",     self._export_iff_ham)
         xe.addAction("C64 PRG (hires)…",   self._export_c64prg)
         xe.addAction("C64 PRG (multi)…",   self._export_c64mprg)
         xe.addAction("MSX COM…",           self._export_msxcom)
@@ -3086,15 +3089,22 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         plm = mb.addMenu("Platform")
         plm.addAction("None (free)",              lambda: self._set_platform('none'))
         plm.addSeparator()
-        plm.addAction("Amiga LowRes  (8×1 cell)", lambda: self._set_platform('amiga'))
+        plm.addAction("Amiga LowRes  (OCS 32col)",  lambda: self._set_platform('amiga'))
+        plm.addAction("Amiga AGA     (256col)",      lambda: self._set_platform('amiga_aga'))
+        plm.addAction("Amiga HAM6    (4096col)",     lambda: self._set_platform('amiga_ham'))
+        plm.addAction("Amiga HAM8    (16M col)",     lambda: self._set_platform('amiga_ham8'))
+        plm.addAction("Amiga RTG WB  (AGA WB pal)", lambda: self._set_platform('amiga_rtg'))
         plm.addAction("C64 Hires     (8×8 cell)", lambda: self._set_platform('c64'))
         plm.addAction("C64 Multicolor(4×8 cell)", lambda: self._set_platform('c64m'))
         plm.addAction("ZX Spectrum   (8×8 cell)", lambda: self._set_platform('spectrum'))
         plm.addAction("ZX Next 256   (free)",     lambda: self._set_platform('specnext'))
         plm.addAction("ZX Next 320   (free)",     lambda: self._set_platform('specnext'))
         plm.addAction("MSX1          (8×8 cell)", lambda: self._set_platform('msx'))
-        plm.addAction("Amstrad CPC   (4×8 cell)", lambda: self._set_platform('cpc'))
+        plm.addAction("Amstrad CPC0  (4×8 cell)", lambda: self._set_platform('cpc'))
+        plm.addAction("Amstrad CPC1  (8×8 cell)", lambda: self._set_platform('cpc1'))
         plm.addAction("Atari ST      (16×1 cell)",lambda: self._set_platform('atari_st'))
+        plm.addAction("Plus/4        (8×8 cell)", lambda: self._set_platform('plus4'))
+        plm.addAction("VIC-20        (8×8 cell)", lambda: self._set_platform('vic20'))
         plm.addSeparator()
         plm.addAction("Enforce colour constraints (toggle)", self._toggle_colour_constraints)
 
@@ -3710,15 +3720,22 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
     # Platform cell sizes: (cell_w, cell_h, max_colours_per_cell)
     _PLATFORM_CELLS = {
-        'none':     (1,   1,   256),
-        'amiga':    (8,   1,   32),
-        'c64':      (8,   8,   2),
-        'c64m':     (4,   8,   4),
-        'spectrum': (8,   8,   2),
-        'specnext': (1,   1,   256),  # ZX Next — full 256 colour, no cell constraint
-        'msx':      (8,   8,   2),
-        'cpc':      (4,   8,   4),
-        'atari_st': (16,  1,   16),
+        'none':      (1,  1,   256),
+        'amiga':     (8,  1,   32),     # OCS: 32 colours, no per-cell limit
+        'amiga_aga': (8,  1,   256),    # AGA: 256 colours
+        'amiga_ham': (1,  1,   4096),   # HAM6: hold-and-modify, 4096 colours
+        'amiga_ham8':(1,  1,   16777216), # HAM8: hold-and-modify, 16M colours
+        'amiga_rtg': (1,  1,   256),    # RTG chunky: AGA WB palette, no constraint
+        'c64':       (8,  8,   2),
+        'c64m':      (4,  8,   4),
+        'spectrum':  (8,  8,   2),
+        'specnext':  (1,  1,   256),
+        'msx':       (8,  8,   2),
+        'cpc':       (4,  8,   4),      # CPC Mode 0: 4 colours per 4×8
+        'cpc1':      (8,  8,   2),      # CPC Mode 1: 2 colours per 8×8
+        'atari_st':  (16, 1,   16),
+        'plus4':     (8,  8,   2),
+        'vic20':     (8,  8,   2),
     }
 
     def _set_platform(self, mode: str): #vers 2
@@ -3735,8 +3752,14 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         _pal_map = {
             'c64': 'C64', 'c64m': 'C64',
             'spectrum': 'ZX Spectrum', 'specnext': 'ULA Plus',
-            'msx': 'MSX1', 'cpc': 'Amstrad CPC',
-            'atari_st': 'Atari ST', 'amiga': 'Amiga OCS',
+            'msx': 'MSX1', 'cpc': 'Amstrad CPC', 'cpc1': 'Amstrad CPC',
+            'atari_st': 'Atari ST',
+            'amiga': 'Amiga OCS',
+            'amiga_aga': 'Amiga AGA',
+            'amiga_ham': 'Amiga OCS',   # HAM6 uses 16 base colours from OCS
+            'amiga_ham8': 'Amiga AGA',  # HAM8 uses 256 base colours from AGA
+            'amiga_rtg': 'Amiga AGA WB',
+            'plus4': 'Plus/4', 'vic20': 'VIC-20',
         }
         if mode in _pal_map:
             self._apply_retro_palette(_pal_map[mode])
@@ -3915,39 +3938,348 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             if self._enforce_constraints and self._platform_mode != 'none':
                 self._apply_cell_constraint(x, y)
 
-    def _apply_cell_constraint(self, px: int, py: int): #vers 1
-        """Enforce platform max-colours-per-cell by quantizing the affected cell."""
-        if not self.dp5_canvas: return
-        cw, ch, max_c = self._PLATFORM_CELLS.get(self._platform_mode, (1,1,256))
-        if max_c >= 256: return
-        # Find cell origin
-        cx = (px // cw) * cw
-        cy = (py // ch) * ch
-        w = self.dp5_canvas.tex_w
-        h = self.dp5_canvas.tex_h
-        # Collect unique colours in cell
+    # Platform palettes for constraint snapping
+    _ZX_PALETTE = [
+        (0,0,0),(0,0,215),(215,0,0),(215,0,215),
+        (0,215,0),(0,215,215),(215,215,0),(215,215,215),
+        (0,0,0),(0,0,255),(255,0,0),(255,0,255),
+        (0,255,0),(0,255,255),(255,255,0),(255,255,255),
+    ]
+    _C64_PALETTE = [
+        (0,0,0),(255,255,255),(136,0,0),(170,255,238),
+        (204,68,204),(0,204,85),(0,0,170),(238,238,119),
+        (221,136,85),(102,68,0),(255,119,119),(51,51,51),
+        (119,119,119),(170,255,102),(0,136,255),(187,187,187),
+    ]
+    _CPC_PALETTE = [
+        (0,0,0),(0,0,128),(0,0,255),(128,0,0),(128,0,128),(128,0,255),
+        (255,0,0),(255,0,128),(255,0,255),(0,128,0),(0,128,128),(0,128,255),
+        (128,128,0),(128,128,128),(128,128,255),(255,128,0),(255,128,128),(255,128,255),
+        (0,255,0),(0,255,128),(0,255,255),(128,255,0),(128,255,128),(128,255,255),
+        (255,255,0),(255,255,128),(255,255,255),
+    ]
+    _MSX_PALETTE = [
+        (0,0,0),(0,0,0),(62,184,73),(116,208,128),
+        (89,85,224),(128,118,241),(185,94,81),(101,219,239),
+        (219,101,89),(255,137,125),(204,195,94),(222,208,135),
+        (58,162,65),(183,102,181),(204,204,204),(255,255,255),
+    ]
+    _ATARI_ST_PALETTE = [
+        (0,0,0),(0,0,168),(0,168,0),(0,168,168),
+        (168,0,0),(168,0,168),(168,84,0),(168,168,168),
+        (84,84,84),(84,84,255),(84,255,84),(84,255,255),
+        (255,84,84),(255,84,255),(255,255,84),(255,255,255),
+    ]
+
+    def _nearest_in_palette(self, r: int, g: int, b: int, palette: list) -> tuple:
+        return min(palette, key=lambda c:(c[0]-r)**2+(c[1]-g)**2+(c[2]-b)**2)
+
+    def _nearest_zx_colour(self, r: int, g: int, b: int) -> tuple:
+        return self._nearest_in_palette(r, g, b, self._ZX_PALETTE)
+
+    def _snap_cell_to_palette(self, cx, cy, cw, ch, w, h, palette): #vers 1
+        """Snap all pixels in cell to nearest colour from given palette."""
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                r,g,b = self.dp5_canvas.rgba[i:i+3]
+                best = self._nearest_in_palette(r, g, b, palette)
+                self.dp5_canvas.rgba[i:i+3] = list(best)
+
+    def _limit_cell_colours(self, cx, cy, cw, ch, w, h, max_c): #vers 1
+        """After palette snap, enforce max_c colours per cell."""
         colours = {}
         for dy in range(ch):
             for dx in range(cw):
                 tx, ty = cx+dx, cy+dy
-                if 0 <= tx < w and 0 <= ty < h:
-                    i = (ty*w+tx)*4
-                    key = tuple(self.dp5_canvas.rgba[i:i+3])
-                    colours[key] = colours.get(key, 0) + 1
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                colours[key] = colours.get(key, 0) + 1
         if len(colours) <= max_c: return
-        # Keep the most frequent max_c colours, remap others to nearest kept
         kept = sorted(colours, key=lambda k: -colours[k])[:max_c]
-        def nearest(c):
-            return min(kept, key=lambda k: (k[0]-c[0])**2+(k[1]-c[1])**2+(k[2]-c[2])**2)
         for dy in range(ch):
             for dx in range(cw):
                 tx, ty = cx+dx, cy+dy
-                if 0 <= tx < w and 0 <= ty < h:
-                    i = (ty*w+tx)*4
-                    key = tuple(self.dp5_canvas.rgba[i:i+3])
-                    if key not in kept:
-                        nr = nearest(key)
-                        self.dp5_canvas.rgba[i:i+3] = list(nr)
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                if key not in kept:
+                    best = min(kept, key=lambda k:(k[0]-key[0])**2+(k[1]-key[1])**2+(k[2]-key[2])**2)
+                    self.dp5_canvas.rgba[i:i+3] = list(best)
+
+    def _apply_cell_constraint(self, px: int, py: int): #vers 3
+        """Dispatch platform-specific colour constraint for the cell at (px,py)."""
+        if not self.dp5_canvas: return
+        cw, ch, max_c = self._PLATFORM_CELLS.get(self._platform_mode, (1,1,256))
+        if max_c >= 256: return
+        cx = (px // cw) * cw
+        cy = (py // ch) * ch
+        w = self.dp5_canvas.tex_w
+        h = self.dp5_canvas.tex_h
+        mode = self._platform_mode
+
+        if mode == 'spectrum':
+            self._apply_spectrum_clash(cx, cy, cw, ch, w, h)
+        elif mode in ('c64', 'c64m'):
+            self._snap_cell_to_palette(cx, cy, cw, ch, w, h, self._C64_PALETTE)
+            self._limit_cell_colours(cx, cy, cw, ch, w, h, max_c)
+        elif mode in ('cpc', 'cpc1'):
+            self._snap_cell_to_palette(cx, cy, cw, ch, w, h, self._CPC_PALETTE)
+            self._limit_cell_colours(cx, cy, cw, ch, w, h, max_c)
+        elif mode == 'msx':
+            self._apply_msx_constraint(cx, cy, cw, ch, w, h)
+        elif mode == 'atari_st':
+            self._apply_atari_st_constraint(cx, cy, cw, ch, w, h)
+        elif mode in ('plus4', 'vic20'):
+            # Plus/4 and VIC-20: snap to C64-like palette, 2 colours per cell
+            self._snap_cell_to_palette(cx, cy, cw, ch, w, h, self._C64_PALETTE)
+            self._limit_cell_colours(cx, cy, cw, ch, w, h, max_c)
+        elif mode == 'amiga':
+            # Amiga OCS: snap to 32-colour OCS palette (no per-cell limit)
+            amiga_ocs = [
+                (0,0,0),(255,255,255),(170,0,0),(85,255,255),
+                (170,0,170),(85,255,85),(0,0,170),(255,255,85),
+                (170,85,0),(85,85,0),(255,119,119),(85,85,85),
+                (119,119,119),(170,255,170),(85,136,255),(170,170,170),
+                (0,0,0),(17,17,17),(34,34,34),(51,51,51),
+                (68,68,68),(85,85,85),(102,102,102),(119,119,119),
+                (136,136,136),(153,153,153),(170,170,170),(187,187,187),
+                (204,204,204),(221,221,221),(238,238,238),(255,255,255),
+            ]
+            self._snap_cell_to_palette(cx, cy, cw, ch, w, h, amiga_ocs)
+        elif mode == 'amiga_aga':
+            # AGA 256 colour: no per-cell constraint, free palette
+            pass
+        elif mode in ('amiga_ham', 'amiga_ham8'):
+            # HAM: simulate hold-and-modify smearing on scanlines touching this cell
+            self._apply_ham_constraint(cx, cy, cw, ch, w, h, mode)
+        elif mode == 'amiga_rtg':
+            # RTG chunky: snap to AGA WB palette, no constraint
+            pass
+        else:
+            self._apply_generic_constraint(cx, cy, cw, ch, w, h, max_c)
+
+        self.dp5_canvas.update()
+
+    def _apply_spectrum_clash(self, cx, cy, cw, ch, w, h): #vers 1
+        """Enforce ZX Spectrum colour clash: max 2 colours per 8×8 cell,
+        both snapped to ZX palette, both from same brightness group."""
+        # Step 1: snap all pixels in cell to nearest ZX colour
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                r,g,b = self.dp5_canvas.rgba[i:i+3]
+                zx = self._nearest_zx_colour(r,g,b)
+                self.dp5_canvas.rgba[i:i+3] = list(zx)
+
+        # Step 2: collect unique ZX colours in cell
+        colours = {}
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                colours[key] = colours.get(key, 0) + 1
+
+        if len(colours) <= 2: return
+
+        # Step 3: determine dominant brightness (bright if >half pixels are bright)
+        bright_count = 0; total = 0
+        for c, cnt in colours.items():
+            total += cnt
+            idx = self._ZX_PALETTE.index(c) if c in self._ZX_PALETTE else 0
+            if idx >= 8: bright_count += cnt
+        use_bright = bright_count > total // 2
+
+        # Step 4: restrict palette to 8 colours of correct brightness
+        valid = self._ZX_PALETTE[8:16] if use_bright else self._ZX_PALETTE[0:8]
+
+        # Step 5: re-snap all pixels to valid group
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                r,g,b = self.dp5_canvas.rgba[i:i+3]
+                best = min(valid, key=lambda c: (c[0]-r)**2+(c[1]-g)**2+(c[2]-b)**2)
+                self.dp5_canvas.rgba[i:i+3] = list(best)
+
+        # Step 6: collect again and keep only top 2 (ink + paper)
+        colours = {}
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                colours[key] = colours.get(key, 0) + 1
+
+        if len(colours) <= 2: return
+        kept = sorted(colours, key=lambda k: -colours[k])[:2]
+
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                if key not in kept:
+                    best = min(kept, key=lambda c: (c[0]-key[0])**2+(c[1]-key[1])**2+(c[2]-key[2])**2)
+                    self.dp5_canvas.rgba[i:i+3] = list(best)
+
+        self.dp5_canvas.update()
+
+    def _apply_ham_constraint(self, cx, cy, cw, ch, w, h, mode): #vers 1
+        """Simulate Amiga HAM hold-and-modify colour smearing on affected scanlines.
+
+        HAM6: 16 base colours. Each pixel either picks a base colour or modifies
+              the R, G, or B component of the previous pixel by 4-bit value.
+        HAM8: 256 base colours. Same but 8-bit components.
+
+        We simulate by re-encoding the scanline left-to-right using HAM rules,
+        then decoding back to RGBA so the user sees the actual HAM output.
+        """
+        is_ham8 = (mode == 'amiga_ham8')
+        bits = 8 if is_ham8 else 4
+        comp_max = (1 << bits) - 1   # 255 for HAM8, 15 for HAM6
+        scale = 255 // comp_max       # 1 for HAM8, 17 for HAM6
+
+        # Build base palette from user palette grid colours
+        if hasattr(self, '_user_pal_grid') and self._user_pal_grid._colors:
+            n_base = 256 if is_ham8 else 16
+            base_pal = [(c.red(), c.green(), c.blue())
+                        for c in self._user_pal_grid._colors[:n_base]]
+            while len(base_pal) < n_base:
+                base_pal.append((0, 0, 0))
+        else:
+            n_base = 256 if is_ham8 else 16
+            base_pal = [(i*scale, i*scale, i*scale) for i in range(n_base)]
+
+        def nearest_base(r, g, b):
+            return min(base_pal, key=lambda c:(c[0]-r)**2+(c[1]-g)**2+(c[2]-b)**2)
+
+        def ham_encode_decode_row(ty):
+            """Re-encode one scanline as HAM and return the decoded RGBA."""
+            prev_r, prev_g, prev_b = 0, 0, 0
+            out = []
+            for tx in range(w):
+                if not (0 <= tx < w): continue
+                i = (ty*w+tx)*4
+                r, g, b = self.dp5_canvas.rgba[i:i+3]
+                # Option 1: use a base colour
+                bc = nearest_base(r, g, b)
+                err_base = (bc[0]-r)**2+(bc[1]-g)**2+(bc[2]-b)**2
+                # Option 2: modify R of prev
+                mr = (r >> (8-bits)) * scale
+                err_r = (mr-r)**2+(prev_g-g)**2+(prev_b-b)**2
+                # Option 3: modify G of prev
+                mg = (g >> (8-bits)) * scale
+                err_g = (prev_r-r)**2+(mg-g)**2+(prev_b-b)**2
+                # Option 4: modify B of prev
+                mb = (b >> (8-bits)) * scale
+                err_b = (prev_r-r)**2+(prev_g-g)**2+(mb-b)**2
+
+                best_err = min(err_base, err_r, err_g, err_b)
+                if best_err == err_base:
+                    out.append(bc)
+                    prev_r, prev_g, prev_b = bc
+                elif best_err == err_r:
+                    out.append((mr, prev_g, prev_b))
+                    prev_r = mr
+                elif best_err == err_g:
+                    out.append((prev_r, mg, prev_b))
+                    prev_g = mg
+                else:
+                    out.append((prev_r, prev_g, mb))
+                    prev_b = mb
+            return out
+
+        # Process all scanlines in the affected cell rows
+        for dy in range(ch):
+            ty = cy + dy
+            if not (0 <= ty < h): continue
+            decoded = ham_encode_decode_row(ty)
+            for tx, c in enumerate(decoded):
+                i = (ty*w+tx)*4
+                self.dp5_canvas.rgba[i:i+4] = [c[0], c[1], c[2], 255]
+
+    def _apply_msx_constraint(self, cx, cy, cw, ch, w, h): #vers 1
+        """MSX1: 2 colours per 8-pixel row within each 8×8 cell (fg+bg per scanline)."""
+        # First snap all to MSX palette
+        self._snap_cell_to_palette(cx, cy, cw, ch, w, h, self._MSX_PALETTE)
+        # Then enforce 2 colours per row
+        for dy in range(ch):
+            ty = cy + dy
+            if not (0 <= ty < h): continue
+            row_colours = {}
+            for dx in range(cw):
+                tx = cx + dx
+                if not (0 <= tx < w): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                row_colours[key] = row_colours.get(key, 0) + 1
+            if len(row_colours) <= 2: continue
+            kept = sorted(row_colours, key=lambda k: -row_colours[k])[:2]
+            for dx in range(cw):
+                tx = cx + dx
+                if not (0 <= tx < w): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                if key not in kept:
+                    best = min(kept, key=lambda k:(k[0]-key[0])**2+(k[1]-key[1])**2+(k[2]-key[2])**2)
+                    self.dp5_canvas.rgba[i:i+3] = list(best)
+
+    def _apply_atari_st_constraint(self, cx, cy, cw, ch, w, h): #vers 1
+        """Atari ST: 16 colours per scanline from ST palette."""
+        # Snap to Atari ST palette first
+        self._snap_cell_to_palette(cx, cy, cw, ch, w, h, self._ATARI_ST_PALETTE)
+        # Enforce max 16 colours per scanline (entire row, not just cell)
+        for dy in range(ch):
+            ty = cy + dy
+            if not (0 <= ty < h): continue
+            row_colours = {}
+            for tx in range(w):
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                row_colours[key] = row_colours.get(key, 0) + 1
+            if len(row_colours) <= 16: continue
+            kept = sorted(row_colours, key=lambda k: -row_colours[k])[:16]
+            for tx in range(w):
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                if key not in kept:
+                    best = min(kept, key=lambda k:(k[0]-key[0])**2+(k[1]-key[1])**2+(k[2]-key[2])**2)
+                    self.dp5_canvas.rgba[i:i+3] = list(best)
+
+    def _apply_generic_constraint(self, cx, cy, cw, ch, w, h, max_c): #vers 1
+        """Enforce generic max-colours-per-cell constraint."""
+        colours = {}
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                colours[key] = colours.get(key, 0) + 1
+        if len(colours) <= max_c: return
+        kept = sorted(colours, key=lambda k: -colours[k])[:max_c]
+        def nearest(c):
+            return min(kept, key=lambda k:(k[0]-c[0])**2+(k[1]-c[1])**2+(k[2]-c[2])**2)
+        for dy in range(ch):
+            for dx in range(cw):
+                tx, ty = cx+dx, cy+dy
+                if not (0 <= tx < w and 0 <= ty < h): continue
+                i = (ty*w+tx)*4
+                key = tuple(self.dp5_canvas.rgba[i:i+3])
+                if key not in kept:
+                    self.dp5_canvas.rgba[i:i+3] = list(nearest(key))
+        self.dp5_canvas.update()
         self.dp5_canvas.update()
 
     def _update_status(self, x: int, y: int, colour: QColor):
@@ -4355,6 +4687,25 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self._canvas_width  = w
         self._canvas_height = h
         self._canvas_bit_depth = depth_combo.currentIndex()
+
+        # Map preset to platform mode and auto-enable constraints
+        preset_name = preset_combo.currentText()
+        _preset_platform = {
+            'C64 Hires': 'c64', 'C64 Multicolor': 'c64m',
+            'Spectrum       256': 'spectrum', 'Spectrum Next  320': 'specnext',
+            'MSX1': 'msx',
+            'CPC Mode 0': 'cpc', 'CPC Mode 1': 'cpc1', 'CPC Mode 2': 'cpc1',
+            'Atari ST Low': 'atari_st', 'Atari ST Med': 'atari_st',
+            'Amiga LowRes': 'amiga', 'Amiga HiRes': 'amiga',
+            'Plus/4 Hires': 'plus4', 'Plus/4 Multi': 'plus4',
+            'VIC-20': 'vic20',
+            # AGA/HAM added via Platform menu — not in preset list by default
+        }
+        plat = next((v for k, v in _preset_platform.items() if k in preset_name), 'none')
+        if plat != 'none':
+            self._set_platform(plat)
+            self._enforce_constraints = True
+
         if self.dp5_canvas:
             self.dp5_canvas.tex_w = w
             self.dp5_canvas.tex_h = h
@@ -4586,7 +4937,62 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         except Exception as e:
             QMessageBox.warning(self, "IFF Export Error", str(e))
 
-    def _export_scr(self): #vers 1
+    def _export_iff_ham(self): #vers 1
+        """Export Amiga IFF ILBM in HAM6 mode (4096 colours via hold-and-modify)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export IFF HAM", "image_ham.iff", "IFF ILBM (*.iff)")
+        if not path: return
+        try:
+            from PIL import Image
+            from apps.methods.iff_ilbm import write_iff_ilbm
+            w, h = self._canvas_width, self._canvas_height
+            # Build 16-colour HAM base palette from user palette
+            if hasattr(self,'_user_pal_grid') and self._user_pal_grid._colors:
+                base_pal = [(c.red(),c.green(),c.blue())
+                            for c in self._user_pal_grid._colors[:16]]
+            else:
+                base_pal = [(i*17,i*17,i*17) for i in range(16)]
+            while len(base_pal) < 16: base_pal.append((0,0,0))
+
+            def nearest_base(r,g,b):
+                return min(range(16),
+                           key=lambda i:(base_pal[i][0]-r)**2+(base_pal[i][1]-g)**2+(base_pal[i][2]-b)**2)
+
+            # HAM encode: produce 6-bit pixel data
+            # Bits 7-6: 00=use index 0-15, 01=mod B, 10=mod R, 11=mod G
+            # Bits 5-0: value (4-bit colour component in upper 4 bits, padded)
+            ham_pixels = []
+            for ty in range(h):
+                pr,pg,pb = 0,0,0
+                for tx in range(w):
+                    i=(ty*w+tx)*4
+                    r,g,b = self.dp5_canvas.rgba[i:i+3]
+                    # Find best encoding
+                    bi = nearest_base(r,g,b)
+                    bc = base_pal[bi]
+                    err_idx = (bc[0]-r)**2+(bc[1]-g)**2+(bc[2]-b)**2
+                    r4=(r>>4); g4=(g>>4); b4=(b>>4)
+                    err_r=(r4*17-r)**2+(pg-g)**2+(pb-b)**2
+                    err_g=(pr-r)**2+(g4*17-g)**2+(pb-b)**2
+                    err_b=(pr-r)**2+(pg-g)**2+(b4*17-b)**2
+                    best=min(err_idx,err_r,err_g,err_b)
+                    if best==err_idx:
+                        ham_pixels.append(bi); pr,pg,pb=bc
+                    elif best==err_r:
+                        ham_pixels.append(0x20|r4); pr=r4*17
+                    elif best==err_g:
+                        ham_pixels.append(0x30|g4); pg=g4*17
+                    else:
+                        ham_pixels.append(0x10|b4); pb=b4*17
+
+            # Write as IFF with CAMG chunk marking HAM mode (0x800)
+            # Use write_iff_ilbm and patch in CAMG
+            data = write_iff_ilbm(w, h, base_pal, bytes(ham_pixels))
+            open(path,'wb').write(data)
+            self._set_status(f"Exported IFF HAM: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "IFF HAM Export Error", str(e))
         """Export ZX Spectrum SCR (256×192, 6144 bitmap + 768 attr bytes)."""
         if not self.dp5_canvas: return
         path, _ = QFileDialog.getSaveFileName(
