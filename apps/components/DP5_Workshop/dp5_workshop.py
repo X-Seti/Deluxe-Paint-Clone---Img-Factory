@@ -611,10 +611,14 @@ class DP5Settings:
         'default_height':    200,
         'retro_palette':     'Amiga AGA WB',
         'show_pixel_grid':   True,
+        'grid_color':        '#808080',  # pixel grid colour (hex)
         'platform_mode':     'none',   # 'none'|'c64'|'c64m'|'spectrum'|'msx'|'cpc'|'atari_st'|'amiga'
         'show_cell_grid':    False,    # show platform cell boundaries
         'show_statusbar':    True,     # show bottom status bar
         'ui_font_size':      10,       # toolbar/button font size
+        'canvas_mode':       'free',   # 'free'|'platform'|'texture'|'icon'
+        'show_anim_strip':   False,    # show animation timeline strip
+        'anim_fps':          12,       # default animation FPS
         'zoom_to_fit_resize': False,
         'show_menubar':       False,
         'menu_style':         'topbar',   # 'topbar' | 'dropdown'
@@ -726,6 +730,21 @@ class DP5SettingsDialog(QDialog):
         self._cell_grid_chk = QCheckBox()
         self._cell_grid_chk.setChecked(self.s.get('show_cell_grid'))
         cl.addRow("Show cell grid:", self._cell_grid_chk)
+
+        self._grid_color_btn = QPushButton()
+        gc = QColor(self.s.get('grid_color'))
+        self._grid_color_btn.setStyleSheet(f"background:{gc.name()};")
+        self._grid_color_btn.setFixedHeight(22)
+        self._grid_color_btn.setToolTip("Click to pick pixel grid colour")
+        def _pick_grid_color():
+            c = QColorDialog.getColor(QColor(self.s.get('grid_color')), self, "Grid Colour",
+                                      QColorDialog.ColorDialogOption.ShowAlphaChannel)
+            if c.isValid():
+                self._grid_color_btn.setStyleSheet(f"background:{c.name()};")
+                self._grid_color_btn._chosen = c.name(QColor.NameFormat.HexArgb)
+        self._grid_color_btn._chosen = self.s.get('grid_color')
+        self._grid_color_btn.clicked.connect(_pick_grid_color)
+        cl.addRow("Pixel grid colour:", self._grid_color_btn)
 
         tabs.addTab(canvas_tab, "Canvas")
 
@@ -839,6 +858,7 @@ class DP5SettingsDialog(QDialog):
         self.s.set('user_pal_rows',      self._user_pal_rows_spin.value())
         self.s.set('platform_mode',      self._platform_combo.currentText())
         self.s.set('show_cell_grid',     self._cell_grid_chk.isChecked())
+        self.s.set('grid_color',         self._grid_color_btn._chosen)
         self.s.set('show_bitmap_list', self._bitmap_chk.isChecked())
         self.s.set('show_statusbar',   self._statusbar_chk.isChecked())
         self.s.set('ui_font_size',     self._font_size_spin.value())
@@ -874,10 +894,13 @@ class DP5Canvas(QWidget):
         self.dither_mode   = 'off'  # 'off' | 'checker' | 'bayer' | 'floyd'
         self.symmetry_mode = 'off'  # 'off' | 'H' | 'V' | 'quad'
         self._dither_toggle = False  # alternates per pixel in dither mode
-        self.show_grid  = True
+        self.show_grid  = True  # overridden after settings load in _create_centre_panel
         self.show_cell_grid = False
-        self.cell_w = 8   # platform cell width in pixels
-        self.cell_h = 8   # platform cell height in pixels
+        self.cell_w = 8
+        self.cell_h = 8
+        self.grid_color = QColor(128, 128, 128, 60)
+        self.onion_skin = False
+        self.onion_rgba = None   # previous frame rgba for onion skin
         self._drawing   = False
         self._last_pt   = None
         self._preview_start = None
@@ -986,27 +1009,49 @@ class DP5Canvas(QWidget):
 
     # ── Drawing ops ───────────────────────────────────────────────────────────
 
-    def flood_fill(self, sx: int, sy: int, fill_col: QColor):
-        if not (0 <= sx < self.tex_w and 0 <= sy < self.tex_h):
-            return
-        target = self.get_pixel(sx, sy)
-        if (target.red()   == fill_col.red()  and
-                target.green() == fill_col.green() and
-                target.blue()  == fill_col.blue()  and
-                target.alpha() == fill_col.alpha()):
-            return
-        stack, visited = [(sx, sy)], set()
+    def flood_fill(self, sx: int, sy: int, fill_col: QColor): #vers 3
+        """Scanline flood fill — O(n) time, O(sqrt n) stack depth."""
+        if not (0 <= sx < self.tex_w and 0 <= sy < self.tex_h): return
+        w, h = self.tex_w, self.tex_h
+        ti = (sy*w+sx)*4
+        tr,tg,tb,ta = self.rgba[ti], self.rgba[ti+1], self.rgba[ti+2], self.rgba[ti+3]
+        fr,fg,fb,fa = fill_col.red(), fill_col.green(), fill_col.blue(), fill_col.alpha()
+        if (tr,tg,tb,ta) == (fr,fg,fb,fa): return
+
+        def match(x, y):
+            i = (y*w+x)*4
+            return (self.rgba[i]==tr and self.rgba[i+1]==tg and
+                    self.rgba[i+2]==tb and self.rgba[i+3]==ta)
+
+        stack = [(sx, sy)]
         while stack:
             x, y = stack.pop()
-            if (x, y) in visited: continue
-            if not (0 <= x < self.tex_w and 0 <= y < self.tex_h): continue
-            px = self.get_pixel(x, y)
-            if (px.red()!=target.red() or px.green()!=target.green() or
-                    px.blue()!=target.blue() or px.alpha()!=target.alpha()):
-                continue
-            visited.add((x, y))
-            self.set_pixel(x, y, fill_col)
-            stack.extend([(x+1,y),(x-1,y),(x,y+1),(x,y-1)])
+            if not (0 <= y < h): continue
+            if not (0 <= x < w and match(x, y)): continue
+            # Extend left
+            x1 = x
+            while x1 > 0 and match(x1-1, y): x1 -= 1
+            # Extend right
+            x2 = x
+            while x2 < w-1 and match(x2+1, y): x2 += 1
+            # Paint span
+            for xi in range(x1, x2+1):
+                i = (y*w+xi)*4
+                self.rgba[i]=fr; self.rgba[i+1]=fg
+                self.rgba[i+2]=fb; self.rgba[i+3]=fa
+            # Seed rows above and below — track entry/exit of matching regions
+            for dy in (-1, 1):
+                ny = y + dy
+                if not (0 <= ny < h): continue
+                in_span = False
+                for xi in range(x1, x2+1):
+                    if match(xi, ny):
+                        if not in_span:
+                            stack.append((xi, ny))
+                            in_span = True
+                    else:
+                        in_span = False
+        self.update()
 
     def draw_line(self, x0, y0, x1, y1, c: QColor):
         dx, dy = abs(x1-x0), abs(y1-y0)
@@ -1291,10 +1336,20 @@ class DP5Canvas(QWidget):
         # Draw at (0,0) — scroll area handles viewport offset via scrollbars
         painter.drawImage(0, 0, scaled)
 
+        # Onion skin — previous frame at 40% opacity
+        if self.onion_skin and self.onion_rgba and len(self.onion_rgba) == self.tex_w*self.tex_h*4:
+            onion_img = QImage(bytes(self.onion_rgba), self.tex_w, self.tex_h,
+                               self.tex_w*4, QImage.Format.Format_RGBA8888)
+            onion_scaled = onion_img.scaled(sw, sh, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                            Qt.TransformationMode.FastTransformation)
+            painter.setOpacity(0.4)
+            painter.drawImage(0, 0, onion_scaled)
+            painter.setOpacity(1.0)
+
         # Pixel grid (only at zoom ≥4)
         if self.show_grid and z >= 4:
             iz = int(z)
-            pen = QPen(QColor(128, 128, 128, 60), 1)
+            pen = QPen(self.grid_color, 1)
             painter.setPen(pen)
             for x in range(0, sw, iz):
                 painter.drawLine(x, 0, x, sh)
@@ -1303,8 +1358,8 @@ class DP5Canvas(QWidget):
 
         # Platform cell grid
         if self.show_cell_grid:
-            cw = int(self.cell_w * z)
-            ch = int(self.cell_h * z)
+            cw = max(1, int(self.cell_w * z))
+            ch = max(1, int(self.cell_h * z))
             pen = QPen(QColor(255, 100, 0, 120), 1, Qt.PenStyle.DashLine)
             painter.setPen(pen)
             for x in range(0, sw+1, cw):
@@ -2616,6 +2671,15 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self._symmetry_mode = 'off'  # cycles: off → H → V → quad
         self._platform_mode = 'none'
         self._enforce_constraints = False
+        self._canvas_mode   = 'free'
+        self._mode_locked   = False
+        self._mode_btns     = {}
+        # Animation
+        self._frames        = []    # list of bytearray (rgba per frame)
+        self._frame_delays  = []    # ms delay per frame
+        self._current_frame = 0
+        self._anim_playing  = False
+        self._anim_timer    = None
         self._canvas_height = self.dp5_settings.get('default_height')
         self._canvas_zoom   = self.dp5_settings.get('default_zoom')
         self._undo_stack    = deque(maxlen=self.dp5_settings.get('undo_levels'))
@@ -2712,11 +2776,6 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
         main_layout.addWidget(self._splitter)
 
-        # Status bar
-        self._status_bar = QStatusBar()
-        show_sb = self.dp5_settings.get('show_statusbar')
-        self._status_bar.setVisible(show_sb)
-        main_layout.addWidget(self._status_bar)
         self._set_status(f"Canvas: {self._canvas_width}×{self._canvas_height}")
 
         # Initial tool
@@ -2804,9 +2863,11 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         layout.addStretch()
 
         # ── [New][Load][Save][Undo][Clear][Brushes] after title ──────────────
-        self.tb_new_btn    = _tb("New",    "New canvas…",
+        self.tb_new_btn    = _tb("New",    "New canvas… (right-click to set mode)",
                                   self._new_canvas,
                                   SVGIconFactory.new_icon)
+        self.tb_new_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tb_new_btn.customContextMenuRequested.connect(self._new_btn_context_menu)
         self.tb_load_btn   = _tb("Load",   "Load / open image file",
                                   self._import_bitmap,
                                   SVGIconFactory.open_icon)
@@ -2970,9 +3031,11 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self.dp5_canvas  = DP5Canvas(w, h, self.canvas_rgba, panel)
             self.dp5_canvas._editor = self
             self.dp5_canvas.pixel_changed.connect(self._on_canvas_changed)
+            self.dp5_canvas.show_grid  = self.dp5_settings.get('show_pixel_grid')
+            self.dp5_canvas.grid_color = QColor(self.dp5_settings.get('grid_color'))
             scroll = QScrollArea()
             scroll.setWidget(self.dp5_canvas)
-            scroll.setWidgetResizable(False)   # canvas sizeHint drives size
+            scroll.setWidgetResizable(False)
             scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._canvas_scroll = scroll
             layout.addWidget(scroll, 1)
@@ -2981,45 +3044,82 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             layout.addWidget(err)
             self.dp5_canvas = None
 
+        # Animation timeline strip
+        self._anim_strip = self._create_anim_strip()
+        self._anim_strip.setVisible(self.dp5_settings.get('show_anim_strip', False))
+        layout.addWidget(self._anim_strip)
+
+        # Status bar — canvas-wide only, 22px fixed height
+        self._status_bar = QStatusBar()
+        self._status_bar.setSizeGripEnabled(False)
+        self._status_bar.setFixedHeight(22)
+        self._status_bar.setVisible(self.dp5_settings.get('show_statusbar'))
+        layout.addWidget(self._status_bar)
+
         return panel
 
     def _build_canvas_menus(self, mb: QMenuBar):
         # File
         fm = mb.addMenu("File")
         fm.addAction("New canvas…",    self._new_canvas)
+        fm.addSeparator()
         fm.addAction("Open image…",    self._import_bitmap)
+        fm.addAction("Open + snap to user palette…", self._import_bitmap_snap_user_pal)
         fm.addAction("Save as PNG…",   self._export_bitmap)
         fm.addAction("Export IFF…",    self._export_iff)
-        # Platform imports submenu
-        im = fm.addMenu("Import Platform Format")
-        im.addAction("ZX Spectrum SCR…",   self._import_scr)
-        im.addAction("MSX SC2…",           self._import_sc2)
-        im.addAction("Atari ST PI1…",      self._import_pi1)
-        im.addAction("C64 Koala…",         self._import_koala)
-        im.addAction("C64 Art Studio…",    self._import_art_studio)
-        im.addSeparator()
-        im.addAction("ZX Next NXI…",       self._import_nxi)
-        im.addAction("ZX Next PAL…",       self._import_pal)
-        # Platform exports submenu
-        ex = fm.addMenu("Export Platform Format")
-        ex.addAction("ZX Spectrum SCR…",   self._export_scr)
-        ex.addAction("MSX SC2…",           self._export_sc2)
-        ex.addAction("Atari ST PI1…",      self._export_pi1)
-        ex.addAction("C64 Koala…",         self._export_koala)
-        ex.addAction("C64 Art Studio…",    self._export_art_studio)
-        ex.addSeparator()
-        ex.addAction("ZX Next NXI…",       self._export_nxi)
-        ex.addAction("ZX Next PAL…",       self._export_pal)
-        # Executable exports submenu
-        xe = fm.addMenu("Export Executable")
-        xe.addAction("ZX Spectrum TAP…",   self._export_tap)
-        xe.addAction("ZX Next NEX…",       self._export_nex)
-        xe.addAction("Amiga IFF HAM…",     self._export_iff_ham)
-        xe.addAction("C64 PRG (hires)…",   self._export_c64prg)
-        xe.addAction("C64 PRG (multi)…",   self._export_c64mprg)
-        xe.addAction("MSX COM…",           self._export_msxcom)
-        xe.addAction("Plus/4 PRG…",        self._export_plus4prg)
-        xe.addAction("VIC-20 PRG…",        self._export_vicprg)
+        fm.addSeparator()
+        am = fm.addMenu("Animation")
+        am.addAction("Export animated GIF…",  self._anim_export_gif)
+        am.addAction("Export PNG sequence…",  self._anim_export_png_seq)
+        fm.addSeparator()
+
+        # ── Platform ──────────────────────────────────────────────────────
+        pm_menu = fm.addMenu("Platform")
+        pm_im = pm_menu.addMenu("Import")
+        pm_im.addAction("ZX Spectrum SCR…",  self._import_scr)
+        pm_im.addAction("MSX SC2…",          self._import_sc2)
+        pm_im.addAction("Atari ST PI1…",     self._import_pi1)
+        pm_im.addAction("C64 Koala…",        self._import_koala)
+        pm_im.addAction("C64 Art Studio…",   self._import_art_studio)
+        pm_im.addSeparator()
+        pm_im.addAction("ZX Next NXI…",      self._import_nxi)
+        pm_im.addAction("ZX Next PAL…",      self._import_pal)
+        pm_ex = pm_menu.addMenu("Export")
+        pm_ex.addAction("ZX Spectrum SCR…",  self._export_scr)
+        pm_ex.addAction("MSX SC2…",          self._export_sc2)
+        pm_ex.addAction("Atari ST PI1…",     self._export_pi1)
+        pm_ex.addAction("C64 Koala…",        self._export_koala)
+        pm_ex.addAction("C64 Art Studio…",   self._export_art_studio)
+        pm_ex.addSeparator()
+        pm_ex.addAction("ZX Next NXI…",      self._export_nxi)
+        pm_ex.addAction("ZX Next PAL…",      self._export_pal)
+        pm_xe = pm_menu.addMenu("Export Executable")
+        pm_xe.addAction("ZX Spectrum TAP…",  self._export_tap)
+        pm_xe.addAction("ZX Next NEX…",      self._export_nex)
+        pm_xe.addAction("Amiga IFF HAM…",    self._export_iff_ham)
+        pm_xe.addAction("C64 PRG (hires)…",  self._export_c64prg)
+        pm_xe.addAction("C64 PRG (multi)…",  self._export_c64mprg)
+        pm_xe.addAction("MSX COM…",          self._export_msxcom)
+        pm_xe.addAction("Plus/4 PRG…",       self._export_plus4prg)
+        pm_xe.addAction("VIC-20 PRG…",       self._export_vicprg)
+
+        # ── Texture ───────────────────────────────────────────────────────
+        tx_menu = fm.addMenu("Texture")
+        tx_menu.addAction("Export PNG (current depth)…", self._export_texture_png)
+        tx_menu.addAction("Export BMP…",                 self._export_texture_bmp)
+        tx_menu.addSeparator()
+        tx_menu.addAction("Snap to user palette",        self._snap_canvas_to_user_palette)
+
+        # ── Icons ─────────────────────────────────────────────────────────
+        ic_menu = fm.addMenu("Icons")
+        ic_menu.addAction("Export Windows ICO…",   self._export_ico)
+        ic_menu.addAction("Export Linux SVG…",      self._export_svg_icon)
+        ic_menu.addAction("Export Amiga Icon…",     self._export_amiga_icon)
+        ic_menu.addSeparator()
+        ic_menu.addAction("Import Windows ICO…",   self._import_ico)
+        ic_menu.addAction("Import SVG…",            self._import_svg)
+        ic_menu.addSeparator()
+        ic_menu.addAction("Snap to user palette",   self._snap_canvas_to_user_palette)
         # Edit
         em = mb.addMenu("Edit")
         em.addAction("Undo\tCtrl+Z",       self._undo_canvas)
@@ -3057,6 +3157,8 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         pm.addAction("Brighten +25",        lambda: self._adjust(25))
         pm.addAction("Darken -25",          lambda: self._adjust(-25))
         pm.addSeparator()
+        pm.addAction("Snap to user palette", self._snap_canvas_to_user_palette)
+        pm.addSeparator()
         dm = pm.addMenu("Dither canvas")
         dm.addAction("Floyd-Steinberg…",    self._dither_floyd_steinberg)
         dm.addAction("Ordered Bayer 4×4…",  self._dither_bayer_canvas)
@@ -3074,16 +3176,33 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             lbl = f"{int(z)}×" if z >= 1 else f"{z}×"
             vm.addAction(lbl, lambda _, zz=z: self._set_zoom(zz))
         ga = vm.addAction("Pixel grid")
-        ga.setCheckable(True); ga.setChecked(True)
-        ga.triggered.connect(
-            lambda v: (setattr(self.dp5_canvas, 'show_grid', v),
-                       self.dp5_canvas.update()) if self.dp5_canvas else None)
+        ga.setCheckable(True)
+        ga.setChecked(self.dp5_settings.get('show_pixel_grid'))
+        ga.triggered.connect(self._set_show_grid)
         cg = vm.addAction("Cell grid (platform)")
         cg.setCheckable(True); cg.setChecked(False)
         cg.triggered.connect(self._toggle_cell_grid)
         sb = vm.addAction("Status bar")
         sb.setCheckable(True); sb.setChecked(self.dp5_settings.get('show_statusbar'))
         sb.triggered.connect(self._toggle_statusbar)
+        an = vm.addAction("Animation timeline")
+        an.setCheckable(True); an.setChecked(self.dp5_settings.get('show_anim_strip', False))
+        an.triggered.connect(self._toggle_anim_strip)
+        os_act = vm.addAction("Onion skin")
+        os_act.setCheckable(True); os_act.setChecked(False)
+        os_act.triggered.connect(self._toggle_onion_skin)
+        vm.addSeparator()
+        # Canvas mode
+        cm = vm.addMenu("Canvas Mode")
+        for mode_id, mode_label in [
+            ('free',     'Free — no constraints'),
+            ('platform', 'Platform — retro computer'),
+            ('texture',  'Texture — game textures'),
+            ('icon',     'Icon — icons and sprites'),
+        ]:
+            a = cm.addAction(mode_label, lambda _, m=mode_id: self._set_canvas_mode(m, confirm=True))
+            a.setCheckable(True)
+            a.setChecked(mode_id == self._canvas_mode)
 
         # Platform menu
         plm = mb.addMenu("Platform")
@@ -3712,11 +3831,14 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         if self.dp5_canvas:
             self.dp5_canvas.snap_grid = on
 
-    def _set_show_grid(self, on: bool):
+    def _set_show_grid(self, on: bool): #vers 2
         if self.dp5_canvas:
-            self.dp5_canvas.show_grid = on
+            self.dp5_canvas.show_grid = bool(on)
             self.dp5_canvas.update()
-        self.dp5_settings.set('show_pixel_grid', on)
+        self.dp5_settings.set('show_pixel_grid', bool(on))
+        self.dp5_settings.save()
+        if hasattr(self, '_grid_chk2'):
+            self._grid_chk2.setChecked(bool(on))
 
     # Platform cell sizes: (cell_w, cell_h, max_colours_per_cell)
     _PLATFORM_CELLS = {
@@ -3767,6 +3889,105 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self._fit_canvas_to_viewport()
         self._set_status(f"Platform: {mode.upper()}  cell {cw}×{ch}")
 
+    def _set_canvas_mode(self, mode: str, confirm: bool = True, apply: bool = True): #vers 2
+        """Switch canvas mode — platform/texture/icon/free."""
+        if mode == self._canvas_mode and self._mode_locked:
+            return
+        if confirm and self._mode_locked and self.dp5_canvas:
+            has_content = any(self.dp5_canvas.rgba[i] != 128
+                              for i in range(0, min(len(self.dp5_canvas.rgba), 400), 4))
+            if has_content:
+                reply = QMessageBox.question(
+                    self, "Switch Mode",
+                    f"Switch to {mode.title()} mode?\n"
+                    f"The canvas will be converted to match {mode} constraints.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if reply != QMessageBox.StandardButton.Yes:
+                    self._update_mode_buttons()
+                    return
+
+        self._canvas_mode  = mode
+        self._mode_locked  = (mode != 'free')
+        self.dp5_settings.set('canvas_mode', mode)
+        self._update_mode_buttons()
+
+        # Only apply to existing canvas when not creating a new one
+        if apply and self.dp5_canvas and self._mode_locked:
+            rgba = bytes(self.dp5_canvas.rgba)
+            if len(rgba) == self._canvas_width * self._canvas_height * 4:
+                self._apply_mode_to_canvas(mode)
+
+        self._set_status(f"Mode: {mode.title()}")
+
+    def _update_mode_buttons(self): #vers 1
+        """Sync toolbar mode button checked states."""
+        for m, btn in self._mode_btns.items():
+            btn.setChecked(m == self._canvas_mode)
+
+    def _apply_mode_to_canvas(self, mode: str): #vers 1
+        """Convert current canvas to match mode constraints."""
+        if not self.dp5_canvas: return
+        from PIL import Image
+        rgba = bytes(self.dp5_canvas.rgba)
+        w, h = self._canvas_width, self._canvas_height
+        img = Image.frombytes('RGBA', (w, h), rgba)
+
+        if mode == 'platform':
+            plat = self._platform_mode
+            plat_res = {
+                'c64':      (320, 200), 'c64m':     (160, 200),
+                'spectrum': (256, 192), 'specnext': (320, 256),
+                'msx':      (256, 192), 'cpc':      (160, 200),
+                'cpc1':     (320, 200), 'atari_st': (320, 200),
+                'amiga':    (320, 256), 'amiga_aga':(320, 256),
+                'plus4':    (320, 200), 'vic20':    (176, 184),
+            }
+            if plat in plat_res:
+                pw, ph = plat_res[plat]
+                img = img.resize((pw, ph), Image.LANCZOS)
+                self._canvas_width  = pw
+                self._canvas_height = ph
+            # Snap to platform palette then apply cell constraints
+            img = self._snap_image_to_platform_palette(img)
+            self._canvas_bit_depth = 3
+
+        elif mode == 'texture':
+            # Snap to nearest power-of-2 size
+            import math
+            pw = 2 ** round(math.log2(max(w, 1)))
+            ph = 2 ** round(math.log2(max(h, 1)))
+            if pw != w or ph != h:
+                img = img.resize((pw, ph), Image.LANCZOS)
+                self._canvas_width  = pw
+                self._canvas_height = ph
+            # Apply current bit depth
+            depth = self._canvas_bit_depth
+            if depth == 2:   # 16-bit
+                rgb = img.convert('RGB'); px = rgb.tobytes()
+                buf = bytearray(len(px))
+                for i in range(0, len(px), 3):
+                    buf[i]  = (px[i]   >> 3) << 3
+                    buf[i+1]= (px[i+1] >> 2) << 2
+                    buf[i+2]= (px[i+2] >> 3) << 3
+                img = Image.frombytes('RGB',(pw,ph),bytes(buf)).convert('RGBA')
+            elif depth == 3: # 8-bit
+                img = img.convert('RGB').quantize(colors=256).convert('RGB').convert('RGBA')
+
+        elif mode == 'icon':
+            # Snap to nearest standard icon size
+            ICON_SIZES = [16, 32, 48, 64, 128, 256]
+            best = min(ICON_SIZES, key=lambda s: abs(s - max(w, h)))
+            if best != w or best != h:
+                img = img.resize((best, best), Image.LANCZOS)
+                self._canvas_width  = best
+                self._canvas_height = best
+
+        self.dp5_canvas.tex_w = self._canvas_width
+        self.dp5_canvas.tex_h = self._canvas_height
+        self.dp5_canvas.rgba  = bytearray(img.tobytes())
+        self.dp5_canvas.update()
+        self._fit_canvas_to_viewport()
+
     def _toggle_cell_grid(self): #vers 1
         if not self.dp5_canvas: return
         self.dp5_canvas.show_cell_grid = not self.dp5_canvas.show_cell_grid
@@ -3777,6 +3998,22 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self.dp5_settings.save()
         if hasattr(self, '_status_bar'):
             self._status_bar.setVisible(on)
+
+    def _toggle_anim_strip(self, on: bool): #vers 1
+        self.dp5_settings.set('show_anim_strip', on)
+        self.dp5_settings.save()
+        if hasattr(self, '_anim_strip'):
+            self._anim_strip.setVisible(on)
+            if on and not self._frames:
+                self._anim_init_frames()
+
+    def _toggle_onion_skin(self, on: bool): #vers 1
+        if self.dp5_canvas:
+            self.dp5_canvas.onion_skin = on
+            self.dp5_canvas.onion_rgba = (
+                bytearray(self._frames[max(0, self._current_frame-1)])
+                if on and len(self._frames) > 1 else None)
+            self.dp5_canvas.update()
 
     def _toggle_colour_constraints(self): #vers 1
         """Toggle enforcement of per-cell colour limits for current platform."""
@@ -3936,7 +4173,19 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         if self.dp5_canvas:
             self._update_status(x, y, self.dp5_canvas.get_pixel(x, y))
             if self._enforce_constraints and self._platform_mode != 'none':
-                self._apply_cell_constraint(x, y)
+                # Debounce — only apply constraint after mouse settles
+                if not hasattr(self, '_constraint_timer'):
+                    from PyQt6.QtCore import QTimer
+                    self._constraint_timer = QTimer()
+                    self._constraint_timer.setSingleShot(True)
+                    self._constraint_timer.timeout.connect(self._apply_pending_constraint)
+                self._constraint_pending = (x, y)
+                self._constraint_timer.start(80)  # 80ms debounce
+
+    def _apply_pending_constraint(self): #vers 1
+        if hasattr(self, '_constraint_pending') and self.dp5_canvas:
+            x, y = self._constraint_pending
+            self._apply_cell_constraint(x, y)
 
     # Platform palettes for constraint snapping
     _ZX_PALETTE = [
@@ -4063,6 +4312,103 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self._apply_generic_constraint(cx, cy, cw, ch, w, h, max_c)
 
         self.dp5_canvas.update()
+
+    def _get_user_palette_rgb(self): #vers 1
+        """Return current user palette as list of (r,g,b) tuples, or None if empty."""
+        if not hasattr(self, '_user_pal_grid'): return None
+        colors = getattr(self._user_pal_grid, '_colors', [])
+        if not colors: return None
+        return [(c.red(), c.green(), c.blue()) for c in colors if c.isValid()]
+
+    def _snap_image_to_user_palette(self, img): #vers 1
+        """Snap every pixel in a PIL RGBA image to nearest colour in the user palette."""
+        from PIL import Image
+        palette = self._get_user_palette_rgb()
+        if not palette:
+            QMessageBox.warning(self, "Snap to User Palette",
+                                "No user palette loaded. Load a palette first.")
+            return img
+        n = min(len(palette), 256)
+        pal_img = Image.new('P', (1, 1))
+        flat = []
+        for r, g, b in palette[:n]:
+            flat += [r, g, b]
+        flat += [0] * (768 - len(flat))
+        pal_img.putpalette(flat)
+        return img.convert('RGB').quantize(palette=pal_img, dither=0).convert('RGB').convert('RGBA')
+
+    def _snap_canvas_to_user_palette(self): #vers 1
+        """Menu action — snap entire canvas to current user palette."""
+        if not self.dp5_canvas: return
+        palette = self._get_user_palette_rgb()
+        if not palette:
+            QMessageBox.warning(self, "Snap to User Palette",
+                                "No user palette loaded.")
+            return
+        self._push_undo()
+        from PIL import Image
+        img = Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                              bytes(self.dp5_canvas.rgba))
+        snapped = self._snap_image_to_user_palette(img)
+        self.dp5_canvas.rgba = bytearray(snapped.tobytes())
+        self.dp5_canvas.update()
+        self._set_status(f"Snapped to user palette ({len(palette)} colours)")
+
+    def _snap_image_to_platform_palette(self, img): #vers 1
+        """Snap every pixel in a PIL RGBA image to the nearest platform palette colour.
+        Returns the modified image. Used when loading an image in platform mode."""
+        mode = self._platform_mode
+        # Get the platform palette as a flat list of (r,g,b) tuples
+        pal_map = {
+            'c64':       self._C64_PALETTE,
+            'c64m':      self._C64_PALETTE,
+            'spectrum':  self._ZX_PALETTE,
+            'specnext':  None,   # 256 colour — no snap needed
+            'msx':       self._MSX_PALETTE,
+            'cpc':       self._CPC_PALETTE,
+            'cpc1':      self._CPC_PALETTE,
+            'atari_st':  self._ATARI_ST_PALETTE,
+            'amiga':     [(0,0,0),(255,255,255),(170,0,0),(85,255,255),
+                          (170,0,170),(85,255,85),(0,0,170),(255,255,85),
+                          (170,85,0),(85,85,0),(255,119,119),(85,85,85),
+                          (119,119,119),(170,255,170),(85,136,255),(170,170,170),
+                          (0,0,0),(17,17,17),(34,34,34),(51,51,51),
+                          (68,68,68),(85,85,85),(102,102,102),(119,119,119),
+                          (136,136,136),(153,153,153),(170,170,170),(187,187,187),
+                          (204,204,204),(221,221,221),(238,238,238),(255,255,255)],
+            'amiga_aga': 'user',   # 256 colour — snap to user palette if loaded
+            'amiga_ham': None,   # handled by HAM constraint
+            'amiga_ham8':None,
+            'amiga_rtg': None,
+            'plus4':     self._C64_PALETTE,
+            'vic20':     self._C64_PALETTE,
+        }
+        palette = pal_map.get(mode)
+        if palette is None:
+            return img   # no snap for full-colour modes
+        if palette == 'user':
+            # Use current user palette
+            user_pal = self._get_user_palette_rgb()
+            if not user_pal: return img
+            palette = user_pal
+
+        from PIL import Image
+        rgb = img.convert('RGB')
+        px = list(rgb.getdata())
+        w, h = rgb.size
+
+        # Build a PIL palette image for fast quantization to platform colours
+        n = len(palette)
+        pal_img = Image.new('P', (1, 1))
+        flat = []
+        for r,g,b in palette:
+            flat += [r,g,b]
+        flat += [0] * (768 - len(flat))
+        pal_img.putpalette(flat)
+
+        # Quantize to platform palette (nearest colour, no dither)
+        snapped = rgb.quantize(palette=pal_img, dither=0).convert('RGB').convert('RGBA')
+        return snapped
 
     def _apply_spectrum_clash(self, cx, cy, cw, ch, w, h): #vers 1
         """Enforce ZX Spectrum colour clash: max 2 colours per 8×8 cell,
@@ -4582,102 +4928,178 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self._pil_transform(lambda i, nw=nw, nh=nh, m=method:
                                 i.resize((nw, nh), m))
 
-    def _new_canvas(self): #vers 3
-        """New canvas dialog with platform presets, custom size, and bit depth."""
+    def _new_btn_context_menu(self, pos): #vers 1
+        """Right-click on New button — pick mode then open New Canvas on that tab."""
+        menu = QMenu(self)
+        menu.addAction("New — Free canvas",     lambda: (self._set_canvas_mode('free',     confirm=False, apply=False), self._new_canvas()))
+        menu.addAction("New — Platform canvas", lambda: (self._set_canvas_mode('platform', confirm=False, apply=False), self._new_canvas()))
+        menu.addAction("New — Texture canvas",  lambda: (self._set_canvas_mode('texture',  confirm=False, apply=False), self._new_canvas()))
+        menu.addAction("New — Icon canvas",     lambda: (self._set_canvas_mode('icon',     confirm=False, apply=False), self._new_canvas()))
+        btn = getattr(self, 'tb_new_btn', None)
+        menu.exec(btn.mapToGlobal(pos) if btn else self.cursor().pos())
+
+    def _new_canvas(self): #vers 4
+        """New canvas dialog — tabbed: Platform / Texture / Icon / Custom."""
         dlg = QDialog(self)
         dlg.setWindowTitle("New Canvas")
-        dlg.setMinimumWidth(340)
-        layout = QVBoxLayout(dlg)
-        form = QFormLayout()
+        dlg.setMinimumWidth(380)
+        root = QVBoxLayout(dlg)
+        tabs = QTabWidget()
 
-        # ── Platform preset ───────────────────────────────────────────────
-        PRESETS = [
-            ("Custom",                    0,    0),
-            ("── Amiga ──",               0,    0),
-            ("Amiga LowRes   320×256",  320,  256),
-            ("Amiga HiRes    640×256",  640,  256),
-            ("Amiga LowRes   320×200",  320,  200),
-            ("Amiga HiRes    640×200",  640,  200),
-            ("── Commodore 64 ──",         0,    0),
-            ("C64 Hires      320×200",  320,  200),
-            ("C64 Multicolor 160×200",  160,  200),
-            ("── ZX Spectrum ──",          0,    0),
-            ("Spectrum       256×192",  256,  192),
-            ("Spectrum Next  320×256",  320,  256),
-            ("── MSX ──",                  0,    0),
-            ("MSX1           256×192",  256,  192),
-            ("── Amstrad CPC ──",           0,    0),
-            ("CPC Mode 0     160×200",  160,  200),
-            ("CPC Mode 1     320×200",  320,  200),
-            ("CPC Mode 2     640×200",  640,  200),
-            ("── Atari ST ──",             0,    0),
-            ("Atari ST Low   320×200",  320,  200),
-            ("Atari ST Med   640×200",  640,  200),
-            ("── Plus/4 ──",               0,    0),
-            ("Plus/4 Hires   320×200",  320,  200),
-            ("Plus/4 Multi   160×200",  160,  200),
-            ("── VIC-20 ──",               0,    0),
-            ("VIC-20         176×184",  176,  184),
-            ("── Sinclair QL ──",           0,    0),
-            ("QL Low         256×256",  256,  256),
-            ("── Common ──",               0,    0),
-            ("Icon            16×16",    16,   16),
-            ("Icon            32×32",    32,   32),
-            ("Icon            48×48",    48,   48),
-            ("Icon            64×64",    64,   64),
-            ("Tile            16×16",    16,   16),
-            ("Sprite          32×64",    32,   64),
-            ("HD              1280×720", 1280, 720),
-            ("Full HD         1920×1080",1920,1080),
-            ("4K              3840×2160",3840,2160),
+        # ── Helper: build a preset combo + w/h/depth form ─────────────────
+        def make_preset_tab(presets, default_w, default_h, default_d):
+            w = QWidget(); fl = QFormLayout(w); fl.setSpacing(6)
+            pc = QComboBox()
+            for name, pw, ph, pd in presets:
+                pc.addItem(name, (pw, ph, pd))
+            fl.addRow("Preset:", pc)
+            ws = QSpinBox(); ws.setRange(1,4096); ws.setValue(default_w)
+            hs = QSpinBox(); hs.setRange(1,4096); hs.setValue(default_h)
+            dc = QComboBox()
+            dc.addItems(["32-bit RGBA","24-bit RGB","16-bit (R5G6B5)","8-bit indexed"])
+            dc.setCurrentIndex(default_d)
+            fl.addRow("Width:",     ws)
+            fl.addRow("Height:",    hs)
+            fl.addRow("Bit depth:", dc)
+            fc = QComboBox()
+            fc.addItems(["Grey (128,128,128)","Black","White","Transparent"])
+            fl.addRow("Fill:", fc)
+            def on_preset(idx):
+                data = pc.itemData(idx)
+                if data:
+                    pw,ph,pd = data
+                    if pw>0: ws.setValue(pw)
+                    if ph>0: hs.setValue(ph)
+                    if pd is not None: dc.setCurrentIndex(pd)
+            pc.currentIndexChanged.connect(on_preset)
+            return w, ws, hs, dc, fc, pc
+
+        # ── Platform tab ───────────────────────────────────────────────────
+        PLATFORM_PRESETS = [
+            ("Custom",                    0,   0,  3),
+            ("── Amiga ──",               0,   0,  0),
+            ("Amiga OCS LowRes 320×256", 320, 256,  3),
+            ("Amiga OCS HiRes  640×256", 640, 256,  3),
+            ("Amiga OCS LowRes 320×200", 320, 200,  3),
+            ("Amiga AGA        320×256", 320, 256,  3),
+            ("Amiga AGA HiRes  640×512", 640, 512,  3),
+            ("── Commodore 64 ──",         0,   0,  0),
+            ("C64 Hires      320×200",   320, 200,  3),
+            ("C64 Multicolor 160×200",   160, 200,  3),
+            ("── ZX Spectrum ──",          0,   0,  0),
+            ("Spectrum       256×192",   256, 192,  3),
+            ("Spectrum Next  320×256",   320, 256,  3),
+            ("── MSX ──",                  0,   0,  0),
+            ("MSX1           256×192",   256, 192,  3),
+            ("── Amstrad CPC ──",           0,   0,  0),
+            ("CPC Mode 0     160×200",   160, 200,  3),
+            ("CPC Mode 1     320×200",   320, 200,  3),
+            ("CPC Mode 2     640×200",   640, 200,  3),
+            ("── Atari ST ──",             0,   0,  0),
+            ("Atari ST Low   320×200",   320, 200,  3),
+            ("Atari ST Med   640×200",   640, 200,  3),
+            ("── Plus/4 ──",               0,   0,  0),
+            ("Plus/4 Hires   320×200",   320, 200,  3),
+            ("Plus/4 Multi   160×200",   160, 200,  3),
+            ("── VIC-20 ──",               0,   0,  0),
+            ("VIC-20         176×184",   176, 184,  3),
+            ("── Sinclair QL ──",           0,   0,  0),
+            ("QL Low         256×256",   256, 256,  3),
         ]
-        preset_combo = QComboBox()
-        for name, w, h in PRESETS:
-            preset_combo.addItem(name, (w, h))
-        form.addRow("Platform preset:", preset_combo)
+        plat_tab, plat_w, plat_h, plat_d, plat_f, plat_pc = make_preset_tab(
+            PLATFORM_PRESETS, 320, 200, 3)
+        tabs.addTab(plat_tab, "Platform")
 
-        # ── Width / Height ────────────────────────────────────────────────
-        w_spin = QSpinBox(); w_spin.setRange(1, 4096)
-        w_spin.setValue(self.dp5_settings.get('default_width'))
-        form.addRow("Width:", w_spin)
-        h_spin = QSpinBox(); h_spin.setRange(1, 4096)
-        h_spin.setValue(self.dp5_settings.get('default_height'))
-        form.addRow("Height:", h_spin)
+        # ── Texture tab ────────────────────────────────────────────────────
+        TEX_PRESETS = [
+            ("Custom",               0,    0,   0),
+            ("── 8-bit ──",          0,    0,   0),
+            ("8b   16×16",          16,   16,   3),
+            ("8b   32×32",          32,   32,   3),
+            ("8b   64×64",          64,   64,   3),
+            ("8b  128×128",        128,  128,   3),
+            ("── 16-bit ──",         0,    0,   0),
+            ("16b  32×32",          32,   32,   2),
+            ("16b  64×64",          64,   64,   2),
+            ("16b 128×128",        128,  128,   2),
+            ("16b 256×256",        256,  256,   2),
+            ("16b 512×512",        512,  512,   2),
+            ("── 24/32-bit ──",      0,    0,   0),
+            ("32b  64×64",          64,   64,   0),
+            ("32b 128×128",        128,  128,   0),
+            ("32b 256×256",        256,  256,   0),
+            ("32b 512×512",        512,  512,   0),
+            ("32b 1024×1024",     1024, 1024,   0),
+            ("32b 2048×2048",     2048, 2048,   0),
+        ]
+        tex_tab, tex_w, tex_h, tex_d, tex_f, tex_pc = make_preset_tab(
+            TEX_PRESETS, 256, 256, 0)
+        tabs.addTab(tex_tab, "Texture")
 
-        # ── Bit depth ─────────────────────────────────────────────────────
-        depth_combo = QComboBox()
-        depth_combo.addItems(["32-bit RGBA", "24-bit RGB", "16-bit (R5G6B5)", "8-bit indexed"])
-        form.addRow("Bit depth:", depth_combo)
+        # ── Icon tab ───────────────────────────────────────────────────────
+        ICON_PRESETS = [
+            ("Custom",               0,   0,  0),
+            ("── Windows ICO ──",    0,   0,  0),
+            ("ICO  16×16",          16,  16,  0),
+            ("ICO  32×32",          32,  32,  0),
+            ("ICO  48×48",          48,  48,  0),
+            ("ICO  64×64",          64,  64,  0),
+            ("ICO 128×128",        128, 128,  0),
+            ("ICO 256×256",        256, 256,  0),
+            ("── Linux / Web ──",    0,   0,  0),
+            ("SVG  32×32",          32,  32,  0),
+            ("SVG  64×64",          64,  64,  0),
+            ("SVG 128×128",        128, 128,  0),
+            ("── Amiga ──",          0,   0,  0),
+            ("Amiga  32×32",        32,  32,  3),
+            ("Amiga  64×64",        64,  64,  3),
+            ("── Sprites ──",        0,   0,  0),
+            ("Sprite 16×16",        16,  16,  3),
+            ("Sprite 16×32",        16,  32,  3),
+            ("Sprite 32×32",        32,  32,  3),
+            ("Sprite 32×64",        32,  64,  3),
+        ]
+        icon_tab, icon_w, icon_h, icon_d, icon_f, icon_pc = make_preset_tab(
+            ICON_PRESETS, 32, 32, 0)
+        tabs.addTab(icon_tab, "Icon")
 
-        # ── Fill colour ───────────────────────────────────────────────────
-        fill_combo = QComboBox()
-        fill_combo.addItems(["Grey (128,128,128)", "Black", "White", "Transparent"])
-        form.addRow("Fill:", fill_combo)
+        # ── Free tab ───────────────────────────────────────────────────────
+        FREE_PRESETS = [
+            ("Custom",               0,    0,  0),
+            ("HD     1280×720",   1280,  720,  1),
+            ("FHD   1920×1080",   1920, 1080,  1),
+            ("4K    3840×2160",   3840, 2160,  1),
+        ]
+        free_tab, free_w, free_h, free_d, free_f, free_pc = make_preset_tab(
+            FREE_PRESETS,
+            self.dp5_settings.get('default_width'),
+            self.dp5_settings.get('default_height'), 0)
+        tabs.addTab(free_tab, "Free")
 
-        layout.addLayout(form)
+        # Set active tab to current mode
+        mode_tab = {'platform':0,'texture':1,'icon':2,'free':3}
+        tabs.setCurrentIndex(mode_tab.get(self._canvas_mode, 3))
 
-        # Wire preset → w/h spinboxes
-        def on_preset(idx):
-            w, h = preset_combo.itemData(idx)
-            if w > 0 and h > 0:
-                w_spin.setValue(w)
-                h_spin.setValue(h)
-        preset_combo.currentIndexChanged.connect(on_preset)
-
-        btns = QHBoxLayout()
-        btns.addStretch()
-        ok  = QPushButton("Create"); ok.setDefault(True)
+        root.addWidget(tabs)
+        btns = QHBoxLayout(); btns.addStretch()
+        ok = QPushButton("Create"); ok.setDefault(True)
         can = QPushButton("Cancel")
-        ok.clicked.connect(dlg.accept)
-        can.clicked.connect(dlg.reject)
+        ok.clicked.connect(dlg.accept); can.clicked.connect(dlg.reject)
         btns.addWidget(ok); btns.addWidget(can)
-        layout.addLayout(btns)
+        root.addLayout(btns)
 
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
 
-        w = w_spin.value()
-        h = h_spin.value()
+        tab_idx = tabs.currentIndex()
+        tab_mode = ['platform','texture','icon','free'][tab_idx]
+        w_spin, h_spin, depth_combo, fill_combo, preset_combo = [
+            (plat_w, plat_h, plat_d, plat_f, plat_pc),
+            (tex_w,  tex_h,  tex_d,  tex_f,  tex_pc),
+            (icon_w, icon_h, icon_d, icon_f, icon_pc),
+            (free_w, free_h, free_d, free_f, free_pc),
+        ][tab_idx]
+
+        w = w_spin.value(); h = h_spin.value()
         fill_idx = fill_combo.currentIndex()
         if   fill_idx == 0: fill = b'\x80\x80\x80\xff'
         elif fill_idx == 1: fill = b'\x00\x00\x00\xff'
@@ -4688,7 +5110,9 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self._canvas_height = h
         self._canvas_bit_depth = depth_combo.currentIndex()
 
-        # Map preset to platform mode and auto-enable constraints
+        # Lock mode — don't apply to canvas (we're about to write fresh rgba)
+        self._set_canvas_mode(tab_mode, confirm=False, apply=False)
+
         preset_name = preset_combo.currentText()
         _preset_platform = {
             'C64 Hires': 'c64', 'C64 Multicolor': 'c64m',
@@ -4696,13 +5120,12 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             'MSX1': 'msx',
             'CPC Mode 0': 'cpc', 'CPC Mode 1': 'cpc1', 'CPC Mode 2': 'cpc1',
             'Atari ST Low': 'atari_st', 'Atari ST Med': 'atari_st',
-            'Amiga LowRes': 'amiga', 'Amiga HiRes': 'amiga',
+            'Amiga OCS': 'amiga', 'Amiga AGA': 'amiga_aga',
             'Plus/4 Hires': 'plus4', 'Plus/4 Multi': 'plus4',
             'VIC-20': 'vic20',
-            # AGA/HAM added via Platform menu — not in preset list by default
         }
-        plat = next((v for k, v in _preset_platform.items() if k in preset_name), 'none')
-        if plat != 'none':
+        plat = next((v for k,v in _preset_platform.items() if k in preset_name), 'none')
+        if tab_mode == 'platform' and plat != 'none':
             self._set_platform(plat)
             self._enforce_constraints = True
 
@@ -4712,7 +5135,15 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self.dp5_canvas.rgba  = bytearray(fill * (w * h))
             self.dp5_canvas.update()
             self._fit_canvas_to_viewport()
-        self._set_status(f"New canvas: {w}×{h}  {depth_combo.currentText()}")
+            # Reset animation to single blank frame
+            self._frames = [bytearray(self.dp5_canvas.rgba)]
+            self._frame_delays = [1000 // max(1, self.dp5_settings.get('anim_fps'))]
+            self._current_frame = 0
+            if hasattr(self, '_anim_strip'):
+                self._anim_refresh_thumbs()
+
+        mode_labels = {'platform':'Platform','texture':'Texture','icon':'Icon','free':'Free'}
+        self._set_status(f"New canvas: {w}\u00d7{h}  {depth_combo.currentText()}  [{mode_labels[tab_mode]}]")
 
     def _crop_to_selection(self): #vers 1
         """Crop canvas to the current selection rect."""
@@ -4799,17 +5230,98 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
     def _import_bitmap(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Image", "",
-            "Images (*.png *.bmp *.jpg *.jpeg *.iff *.lbm);;All Files (*)")
+            "Images (*.png *.bmp *.jpg *.jpeg *.iff *.lbm *.iff);;All Files (*)")
         if not path or not self.dp5_canvas: return
         self._import_bitmap_path(path)
 
-    def _import_bitmap_path(self, path: str):
-        """Load an image directly from a file path (called by imgfactory docked)."""
+    def _import_bitmap_snap_user_pal(self): #vers 1
+        """Open an image then immediately snap it to the current user palette."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Image + Snap to User Palette", "",
+            "Images (*.png *.bmp *.jpg *.jpeg *.iff *.lbm);;All Files (*)")
         if not path or not self.dp5_canvas: return
+        palette = self._get_user_palette_rgb()
+        if not palette:
+            QMessageBox.warning(self, "Snap to User Palette",
+                                "No user palette loaded. Load a palette first.")
+            return
+        self._import_bitmap_path(path)
+        # Snap after load (works on whatever mode reduced it to)
+        self._snap_canvas_to_user_palette()
+
+    def _import_bitmap_path(self, path: str): #vers 3
+        """Load an image, auto-reduce to current mode constraints if locked."""
+        if not path or not self.dp5_canvas: return
+        # Save current canvas state into animation frame before overwriting
+        if self._frames:
+            self._anim_save_current_frame()
         try:
             from PIL import Image
             img = Image.open(path).convert('RGBA')
             w, h = img.size
+
+            mode = getattr(self, '_canvas_mode', 'free')
+            locked = getattr(self, '_mode_locked', False)
+
+            if locked and mode == 'platform':
+                # 1. Resize to platform resolution
+                plat = getattr(self, '_platform_mode', 'none')
+                plat_res = {
+                    'c64':(320,200),'c64m':(160,200),'spectrum':(256,192),
+                    'specnext':(320,256),'msx':(256,192),'cpc':(160,200),
+                    'cpc1':(320,200),'atari_st':(320,200),'amiga':(320,256),
+                    'amiga_aga':(320,256),'plus4':(320,200),'vic20':(176,184),
+                }
+                if plat in plat_res:
+                    w, h = plat_res[plat]
+                    img = img.resize((w, h), Image.LANCZOS)
+                # 2. Snap every pixel to nearest platform palette colour
+                img = self._snap_image_to_platform_palette(img)
+                self._canvas_bit_depth = 3
+
+            elif locked and mode == 'texture':
+                import math
+                pw = 2 ** round(math.log2(max(w, 1)))
+                ph = 2 ** round(math.log2(max(h, 1)))
+                if pw != w or ph != h:
+                    img = img.resize((pw, ph), Image.LANCZOS)
+                    w, h = pw, ph
+                depth = self._canvas_bit_depth
+                if depth == 1:
+                    img = img.convert('RGB').convert('RGBA')
+                elif depth == 2:
+                    rgb = img.convert('RGB'); px = rgb.tobytes()
+                    buf = bytearray(len(px))
+                    for i in range(0, len(px), 3):
+                        buf[i]  = (px[i]   >> 3) << 3
+                        buf[i+1]= (px[i+1] >> 2) << 2
+                        buf[i+2]= (px[i+2] >> 3) << 3
+                    img = Image.frombytes('RGB',(w,h),bytes(buf)).convert('RGBA')
+                elif depth == 3:
+                    img = img.convert('RGB').quantize(colors=256).convert('RGB').convert('RGBA')
+
+            elif locked and mode == 'icon':
+                ICON_SIZES = [16, 32, 48, 64, 128, 256]
+                best = min(ICON_SIZES, key=lambda s: abs(s - max(w, h)))
+                img = img.resize((best, best), Image.LANCZOS)
+                w, h = best, best
+
+            else:
+                # Free mode: apply bit depth only
+                depth = getattr(self, '_canvas_bit_depth', 0)
+                if depth == 1:
+                    img = img.convert('RGB').convert('RGBA')
+                elif depth == 2:
+                    rgb = img.convert('RGB'); px = rgb.tobytes()
+                    buf = bytearray(len(px))
+                    for i in range(0, len(px), 3):
+                        buf[i]  = (px[i]   >> 3) << 3
+                        buf[i+1]= (px[i+1] >> 2) << 2
+                        buf[i+2]= (px[i+2] >> 3) << 3
+                    img = Image.frombytes('RGB',(w,h),bytes(buf)).convert('RGBA')
+                elif depth == 3:
+                    img = img.convert('RGB').quantize(colors=256).convert('RGB').convert('RGBA')
+
             self._canvas_width  = w
             self._canvas_height = h
             new_rgba = bytearray(img.tobytes())
@@ -4818,29 +5330,44 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self.dp5_canvas.rgba  = new_rgba
             self.dp5_canvas.update()
 
-            # Auto-fit zoom
+            # Auto-fit zoom — pixel-perfect for small canvases
             sa = getattr(self, '_canvas_scroll', None)
-            if sa:
-                vw = sa.viewport().width()
-                vh = sa.viewport().height()
-            else:
-                vw, vh = 800, 600
-            z_w = (vw * 0.9) / max(1, w)
-            z_h = (vh * 0.9) / max(1, h)
-            fit_z = min(z_w, z_h)
-            for snap in (16, 8, 4, 2, 1):
-                if fit_z >= snap:
-                    fit_z = snap; break
+            vw = sa.viewport().width()  if sa else 800
+            vh = sa.viewport().height() if sa else 600
+            fit_z = min(vw/max(1,w), vh/max(1,h))
+            for snap in (16,8,4,2,1):
+                if fit_z >= snap: fit_z = snap; break
             self._set_zoom(max(0.05, fit_z))
 
-            # Extract palette
-            p_img    = img.quantize(colors=256)
-            pal_flat = p_img.getpalette()
-            palette  = [(pal_flat[i*3], pal_flat[i*3+1], pal_flat[i*3+2])
-                        for i in range(256)]
-            self.pal_bar.set_palette_raw(palette)
+            # Update image palette display
+            if locked and mode == 'platform' and self._platform_mode in (
+                    'c64','c64m','spectrum','msx','cpc','cpc1','atari_st',
+                    'amiga','plus4','vic20'):
+                # Show the actual platform palette
+                pal_src = {
+                    'c64':self._C64_PALETTE,'c64m':self._C64_PALETTE,
+                    'spectrum':self._ZX_PALETTE,'msx':self._MSX_PALETTE,
+                    'cpc':self._CPC_PALETTE,'cpc1':self._CPC_PALETTE,
+                    'atari_st':self._ATARI_ST_PALETTE,
+                    'plus4':self._C64_PALETTE,'vic20':self._C64_PALETTE,
+                }.get(self._platform_mode, [])
+                if pal_src:
+                    self.pal_bar.set_palette_raw(pal_src)
+            else:
+                p_img    = img.quantize(colors=256)
+                pal_flat = p_img.getpalette()
+                palette  = [(pal_flat[i*3], pal_flat[i*3+1], pal_flat[i*3+2]) for i in range(256)]
+                self.pal_bar.set_palette_raw(palette)
 
-            # Add to bitmap list
+            # Apply platform cell constraints across the whole image
+            if locked and mode == 'platform' and self._enforce_constraints:
+                cw = max(1, self.dp5_canvas.cell_w)
+                ch = max(1, self.dp5_canvas.cell_h)
+                for cy in range(0, h, ch):
+                    for cx in range(0, w, cw):
+                        self._apply_cell_constraint(cx, cy)
+                self.dp5_canvas.update()
+
             name = os.path.basename(path)
             self._bitmap_list.append({'name': name, 'rgba': new_rgba, 'w': w, 'h': h})
             self._bitmap_lw.addItem(name)
@@ -4868,6 +5395,7 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
             if self.dp5_canvas:
                 self.dp5_canvas.show_grid = self.dp5_settings.get('show_pixel_grid')
+                self.dp5_canvas.grid_color = QColor(self.dp5_settings.get('grid_color'))
                 self.dp5_canvas.show_cell_grid = self.dp5_settings.get('show_cell_grid')
                 self.dp5_canvas.update()
                 if self.dp5_settings.get('zoom_to_fit_resize'):
@@ -4937,17 +5465,16 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         except Exception as e:
             QMessageBox.warning(self, "IFF Export Error", str(e))
 
-    def _export_iff_ham(self): #vers 1
-        """Export Amiga IFF ILBM in HAM6 mode (4096 colours via hold-and-modify)."""
+    def _export_iff_ham(self): #vers 2
+        """Export Amiga IFF ILBM in HAM6 mode (6 bitplanes, CAMG=0x800)."""
         if not self.dp5_canvas: return
         path, _ = QFileDialog.getSaveFileName(
             self, "Export IFF HAM", "image_ham.iff", "IFF ILBM (*.iff)")
         if not path: return
         try:
-            from PIL import Image
-            from apps.methods.iff_ilbm import write_iff_ilbm
+            import struct
             w, h = self._canvas_width, self._canvas_height
-            # Build 16-colour HAM base palette from user palette
+            # Build 16-colour base palette
             if hasattr(self,'_user_pal_grid') and self._user_pal_grid._colors:
                 base_pal = [(c.red(),c.green(),c.blue())
                             for c in self._user_pal_grid._colors[:16]]
@@ -4957,42 +5484,70 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
             def nearest_base(r,g,b):
                 return min(range(16),
-                           key=lambda i:(base_pal[i][0]-r)**2+(base_pal[i][1]-g)**2+(base_pal[i][2]-b)**2)
+                    key=lambda i:(base_pal[i][0]-r)**2+(base_pal[i][1]-g)**2+(base_pal[i][2]-b)**2)
 
-            # HAM encode: produce 6-bit pixel data
-            # Bits 7-6: 00=use index 0-15, 01=mod B, 10=mod R, 11=mod G
-            # Bits 5-0: value (4-bit colour component in upper 4 bits, padded)
-            ham_pixels = []
+            # HAM6 encode — 6 bits per pixel, 6 bitplanes
+            # control bits 5-4: 00=palette, 01=mod B, 10=mod R, 11=mod G
+            # bits 3-0: 4-bit value
+            rows = []
             for ty in range(h):
                 pr,pg,pb = 0,0,0
+                row = []
                 for tx in range(w):
-                    i=(ty*w+tx)*4
+                    i = (ty*w+tx)*4
                     r,g,b = self.dp5_canvas.rgba[i:i+3]
-                    # Find best encoding
                     bi = nearest_base(r,g,b)
                     bc = base_pal[bi]
                     err_idx = (bc[0]-r)**2+(bc[1]-g)**2+(bc[2]-b)**2
-                    r4=(r>>4); g4=(g>>4); b4=(b>>4)
-                    err_r=(r4*17-r)**2+(pg-g)**2+(pb-b)**2
-                    err_g=(pr-r)**2+(g4*17-g)**2+(pb-b)**2
-                    err_b=(pr-r)**2+(pg-g)**2+(b4*17-b)**2
-                    best=min(err_idx,err_r,err_g,err_b)
-                    if best==err_idx:
-                        ham_pixels.append(bi); pr,pg,pb=bc
-                    elif best==err_r:
-                        ham_pixels.append(0x20|r4); pr=r4*17
-                    elif best==err_g:
-                        ham_pixels.append(0x30|g4); pg=g4*17
+                    r4,g4,b4 = r>>4, g>>4, b>>4
+                    err_r = (r4*17-r)**2+(pg-g)**2+(pb-b)**2
+                    err_g = (pr-r)**2+(g4*17-g)**2+(pb-b)**2
+                    err_b = (pr-r)**2+(pg-g)**2+(b4*17-b)**2
+                    best = min(err_idx,err_r,err_g,err_b)
+                    if best == err_idx:
+                        row.append(bi); pr,pg,pb = bc
+                    elif best == err_r:
+                        row.append(0x20|r4); pr = r4*17
+                    elif best == err_g:
+                        row.append(0x30|g4); pg = g4*17
                     else:
-                        ham_pixels.append(0x10|b4); pb=b4*17
+                        row.append(0x10|b4); pb = b4*17
+                rows.append(row)
 
-            # Write as IFF with CAMG chunk marking HAM mode (0x800)
-            # Use write_iff_ilbm and patch in CAMG
-            data = write_iff_ilbm(w, h, base_pal, bytes(ham_pixels))
-            open(path,'wb').write(data)
+            # Pack 6 bitplanes per row
+            n_planes = 6
+            row_bytes = (w + 15) // 16 * 2  # words per row
+            body = bytearray()
+            for row in rows:
+                planes = [bytearray(row_bytes) for _ in range(n_planes)]
+                for x, px in enumerate(row):
+                    for p in range(n_planes):
+                        if px & (1 << p):
+                            byte_i = x // 8
+                            planes[p][byte_i] |= 0x80 >> (x % 8)
+                for p in planes:
+                    body += bytes(p)
+
+            def chunk(tag, data):
+                d = bytes(data)
+                c = tag.encode() + struct.pack('>I', len(d)) + d
+                if len(d) % 2: c += b'\x00'
+                return c
+
+            bmhd = struct.pack('>HHhhBBBBHBBhh',
+                w, h, 0, 0, n_planes, 0, 0, 0, 1, 8, 8, w, h)
+            cmap = b''.join(bytes(c) for c in base_pal)
+            camg = struct.pack('>I', 0x0800)  # HAM mode flag
+            form_data = (b'ILBM' + chunk('BMHD', bmhd) +
+                         chunk('CMAP', cmap) + chunk('CAMG', camg) +
+                         chunk('BODY', body))
+            out = b'FORM' + struct.pack('>I', len(form_data)) + form_data
+            open(path,'wb').write(out)
             self._set_status(f"Exported IFF HAM: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.warning(self, "IFF HAM Export Error", str(e))
+
+    def _export_scr(self): #vers 1
         """Export ZX Spectrum SCR (256×192, 6144 bitmap + 768 attr bytes)."""
         if not self.dp5_canvas: return
         path, _ = QFileDialog.getSaveFileName(
@@ -5031,6 +5586,40 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
                     px = pixels[(ay*8)*256 + ax*8]
                     attrs[ay*32+ax] = px & 7
             open(path, 'wb').write(bitmap + attrs)
+            self._set_status(f"Exported SCR: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "SCR Export Error", str(e))
+
+    def _export_scr(self): #vers 1
+        """Export ZX Spectrum SCR (256×192, 6144 bitmap + 768 attr bytes)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export ZX Spectrum SCR", "screen.scr", "SCR (*.scr)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = Image.frombytes('RGBA',(self._canvas_width,self._canvas_height),
+                                  bytes(self.dp5_canvas.rgba)).convert('RGB')
+            img = img.resize((256,192), Image.NEAREST)
+            zx_pal = [0,0,0,215,0,0,0,215,0,215,215,0,0,0,215,215,0,215,0,215,215,215,215,215]
+            pi = Image.new('P',(1,1)); pi.putpalette(zx_pal+[0]*744)
+            q = img.quantize(palette=pi, dither=0)
+            pixels = list(q.getdata())
+            bitmap = bytearray(6144); attrs = bytearray(768)
+            for third in range(3):
+                for row in range(8):
+                    for char_y in range(8):
+                        y = third*64+char_y*8+row
+                        for char_x in range(32):
+                            byte = 0
+                            for bit in range(8):
+                                if pixels[y*256+char_x*8+bit]&1:
+                                    byte |= (0x80>>bit)
+                            bitmap[third*2048+row*256+char_y*32+char_x] = byte
+            for ay in range(24):
+                for ax in range(32):
+                    attrs[ay*32+ax] = pixels[(ay*8)*256+ax*8]&7
+            open(path,'wb').write(bitmap+attrs)
             self._set_status(f"Exported SCR: {os.path.basename(path)}")
         except Exception as e:
             QMessageBox.warning(self, "SCR Export Error", str(e))
@@ -5844,6 +6433,481 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         except Exception as e:
             QMessageBox.warning(self, "NEX Export Error", str(e))
 
+    # ── Icon export / import ──────────────────────────────────────────────────
+
+    def _get_canvas_pil(self):
+        """Return current canvas as PIL RGBA Image."""
+        from PIL import Image
+        return Image.frombytes('RGBA', (self._canvas_width, self._canvas_height),
+                               bytes(self.dp5_canvas.rgba))
+
+    def _export_texture_png(self): #vers 1
+        """Export texture as PNG at current bit depth."""
+        if not self.dp5_canvas: return
+        depth_names = {0:'32bit', 1:'24bit', 2:'16bit', 3:'8bit'}
+        d = depth_names.get(self._canvas_bit_depth, '32bit')
+        w, h = self._canvas_width, self._canvas_height
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Texture PNG",
+            f"texture_{w}x{h}_{d}.png", "PNG (*.png)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = self._get_canvas_pil()
+            depth = self._canvas_bit_depth
+            if depth == 1:
+                img = img.convert('RGB').convert('RGBA')
+            elif depth == 2:
+                rgb = img.convert('RGB'); px = rgb.tobytes()
+                buf = bytearray(len(px))
+                for i in range(0, len(px), 3):
+                    buf[i]  =(px[i]   >>3)<<3
+                    buf[i+1]=(px[i+1] >>2)<<2
+                    buf[i+2]=(px[i+2] >>3)<<3
+                img = Image.frombytes('RGB',(w,h),bytes(buf)).convert('RGBA')
+            elif depth == 3:
+                img = img.convert('RGB').quantize(colors=256).convert('RGB').convert('RGBA')
+            img.save(path, 'PNG')
+            self._set_status(f"Exported texture: {os.path.basename(path)}  {w}×{h} {d}")
+        except Exception as e:
+            QMessageBox.warning(self, "Texture Export Error", str(e))
+
+    def _export_texture_bmp(self): #vers 1
+        """Export texture as BMP at current bit depth."""
+        if not self.dp5_canvas: return
+        w, h = self._canvas_width, self._canvas_height
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Texture BMP", f"texture_{w}x{h}.bmp", "BMP (*.bmp)")
+        if not path: return
+        try:
+            img = self._get_canvas_pil().convert('RGB')
+            if self._canvas_bit_depth == 3:
+                img = img.quantize(colors=256).convert('RGB')
+            img.save(path, 'BMP')
+            self._set_status(f"Exported BMP: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "BMP Export Error", str(e))
+
+    def _export_ico(self): #vers 1
+        """Export Windows ICO — multiple sizes embedded (16,32,48,64,128,256)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Windows ICO", "icon.ico", "ICO (*.ico)")
+        if not path: return
+        try:
+            from PIL import Image
+            img = self._get_canvas_pil()
+            sizes = [s for s in [16,32,48,64,128,256]
+                     if s <= min(self._canvas_width, self._canvas_height)]
+            if not sizes: sizes = [16]
+            # PIL saves ICO with multiple sizes from one image
+            frames = [img.resize((s,s), Image.LANCZOS) for s in sizes]
+            frames[0].save(path, format='ICO', sizes=[(s,s) for s in sizes],
+                           append_images=frames[1:])
+            self._set_status(f"Exported ICO: {os.path.basename(path)}  sizes:{sizes}")
+        except Exception as e:
+            QMessageBox.warning(self, "ICO Export Error", str(e))
+
+    def _export_svg_icon(self): #vers 1
+        """Export Linux/Web SVG icon — embeds canvas as base64 PNG inside SVG."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export SVG Icon", "icon.svg", "SVG (*.svg)")
+        if not path: return
+        try:
+            import base64, io
+            from PIL import Image
+            img = self._get_canvas_pil()
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            w, h = self._canvas_width, self._canvas_height
+            svg = f'''<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="{w}" height="{h}" viewBox="0 0 {w} {h}">
+  <image width="{w}" height="{h}" xlink:href="data:image/png;base64,{b64}"/>
+</svg>'''
+            open(path, 'w').write(svg)
+            self._set_status(f"Exported SVG: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "SVG Export Error", str(e))
+
+    def _export_amiga_icon(self): #vers 1
+        """Export Amiga .info icon — simple IFF-based icon (NewIcon style PNG embedded)."""
+        if not self.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Amiga Icon", "icon.info", "Amiga Icon (*.info)")
+        if not path: return
+        try:
+            import struct, io
+            from PIL import Image
+            img = self._get_canvas_pil().resize((32,32), Image.NEAREST)
+            # Quantize to 4 colours (Amiga WB standard)
+            q = img.convert('RGB').quantize(colors=4, dither=0)
+            pixels = list(q.getdata())
+            pal = q.getpalette()
+            # Amiga DiskObject header (68 bytes) — simplified magic
+            # Real .info files need full DiskObject struct — we write a minimal valid one
+            # Magic: 0xE310 (WB_MAGIC), version 1
+            hdr = bytearray(78)
+            hdr[0:2] = b'\xE3\x10'  # WBDISK magic
+            hdr[2:4] = b'\x00\x01'  # version
+            # Gadget image: 32×32, 2 bitplanes
+            hdr[12:14] = (32).to_bytes(2,'big')  # width
+            hdr[14:16] = (32).to_bytes(2,'big')  # height
+            hdr[16:18] = (2).to_bytes(2,'big')   # depth
+            # Encode 2 bitplanes
+            plane_size = 32*32//8
+            planes = [bytearray(plane_size), bytearray(plane_size)]
+            for i,p in enumerate(pixels):
+                byte_idx = i//8; bit = 7-(i%8)
+                if p&1: planes[0][byte_idx] |= (1<<bit)
+                if (p>>1)&1: planes[1][byte_idx] |= (1<<bit)
+            # Write minimal icon file
+            out = bytes(hdr) + bytes(planes[0]) + bytes(planes[1])
+            open(path,'wb').write(out)
+            self._set_status(f"Exported Amiga icon: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Amiga Icon Error", str(e))
+
+    def _import_ico(self): #vers 1
+        """Import Windows ICO — load largest frame into canvas."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Windows ICO", "", "ICO (*.ico);;All Files (*)")
+        if not path: return
+        try:
+            from PIL import Image
+            ico = Image.open(path)
+            # Get largest frame
+            sizes = ico.info.get('sizes', [(ico.width, ico.height)])
+            largest = max(sizes, key=lambda s: s[0]*s[1])
+            ico.size = largest
+            ico.seek(0)
+            # Find frame matching largest size
+            try:
+                frames = []
+                while True:
+                    frames.append((ico.size, ico.copy().convert('RGBA')))
+                    ico.seek(ico.tell()+1)
+            except EOFError:
+                pass
+            if frames:
+                best = max(frames, key=lambda f: f[0][0]*f[0][1])
+                img = best[1]
+            else:
+                img = ico.convert('RGBA')
+            # Apply bit depth if set
+            self._canvas_bit_depth = getattr(self,'_canvas_bit_depth',0)
+            self._load_rgba(bytearray(img.tobytes()), img.width, img.height,
+                           os.path.basename(path))
+        except Exception as e:
+            QMessageBox.warning(self, "ICO Import Error", str(e))
+
+    def _import_svg(self): #vers 1
+        """Import SVG icon — rasterize to current canvas size."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import SVG", "", "SVG (*.svg);;All Files (*)")
+        if not path: return
+        try:
+            # Try cairosvg first, fall back to Qt SVG renderer
+            w = self._canvas_width; h = self._canvas_height
+            try:
+                import cairosvg, io
+                from PIL import Image
+                png_data = cairosvg.svg2png(url=path, output_width=w, output_height=h)
+                img = Image.open(io.BytesIO(png_data)).convert('RGBA')
+            except ImportError:
+                from PyQt6.QtSvg import QSvgRenderer
+                from PyQt6.QtGui import QImage, QPainter
+                renderer = QSvgRenderer(path)
+                qimg = QImage(w, h, QImage.Format.Format_ARGB32)
+                qimg.fill(0)
+                painter = QPainter(qimg)
+                renderer.render(painter)
+                painter.end()
+                from PIL import Image
+                buf = qimg.bits().asarray(w*h*4)
+                # Qt ARGB32 → RGBA
+                arr = bytearray(buf)
+                for i in range(0, len(arr), 4):
+                    arr[i], arr[i+2] = arr[i+2], arr[i]  # BGR→RGB
+                img = Image.frombytes('RGBA',(w,h),bytes(arr))
+            self._load_rgba(bytearray(img.tobytes()), w, h, os.path.basename(path))
+        except Exception as e:
+            QMessageBox.warning(self, "SVG Import Error", str(e))
+
+    # ── Animation ─────────────────────────────────────────────────────────────
+
+    def _create_anim_strip(self): #vers 1
+        """Create the animation timeline strip widget."""
+        from PyQt6.QtCore import QTimer
+        strip = QWidget()
+        strip.setFixedHeight(64)
+        strip.setStyleSheet("background:#1a1a1a;")
+        hl = QHBoxLayout(strip)
+        hl.setContentsMargins(4, 2, 4, 2)
+        hl.setSpacing(4)
+
+        # Transport buttons
+        def tbtn(label, tip, slot):
+            b = QPushButton(label)
+            b.setFixedSize(28, 28)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            b.setStyleSheet("QPushButton{background:#333;color:#eee;border:1px solid #555;border-radius:3px;}"
+                            "QPushButton:hover{background:#555;}")
+            return b
+
+        hl.addWidget(tbtn("|◀", "First frame",    self._anim_first))
+        hl.addWidget(tbtn("◀",  "Previous frame",  self._anim_prev))
+        self._anim_play_btn = tbtn("▶", "Play / Stop", self._anim_toggle_play)
+        hl.addWidget(self._anim_play_btn)
+        hl.addWidget(tbtn("▶|", "Next frame",     self._anim_next))
+        hl.addWidget(tbtn("|▶|","Last frame",     self._anim_last))
+        hl.addSpacing(6)
+        hl.addWidget(tbtn("+",  "Add frame (copy current)", self._anim_add_frame))
+        hl.addWidget(tbtn("×",  "Delete current frame",      self._anim_del_frame))
+        hl.addWidget(tbtn("⬆", "Duplicate frame",            self._anim_dup_frame))
+        hl.addSpacing(6)
+
+        # FPS
+        fps_lbl = QLabel("FPS:")
+        fps_lbl.setStyleSheet("color:#aaa; font-size:11px;")
+        self._anim_fps_spin = QSpinBox()
+        self._anim_fps_spin.setRange(1, 60)
+        self._anim_fps_spin.setValue(self.dp5_settings.get('anim_fps'))
+        self._anim_fps_spin.setFixedWidth(52)
+        self._anim_fps_spin.setStyleSheet("background:#333;color:#eee;border:1px solid #555;")
+        hl.addWidget(fps_lbl)
+        hl.addWidget(self._anim_fps_spin)
+        hl.addSpacing(6)
+
+        # Frame counter
+        self._anim_frame_lbl = QLabel("Frame 1/1")
+        self._anim_frame_lbl.setStyleSheet("color:#aaa; font-size:11px; min-width:70px;")
+        hl.addWidget(self._anim_frame_lbl)
+
+        # Frame thumbnail scroll
+        self._anim_thumb_area = QScrollArea()
+        self._anim_thumb_area.setFixedHeight(58)
+        self._anim_thumb_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._anim_thumb_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._anim_thumb_area.setStyleSheet("background:#111; border:none;")
+        self._anim_thumb_container = QWidget()
+        self._anim_thumb_layout = QHBoxLayout(self._anim_thumb_container)
+        self._anim_thumb_layout.setContentsMargins(2,2,2,2)
+        self._anim_thumb_layout.setSpacing(3)
+        self._anim_thumb_area.setWidget(self._anim_thumb_container)
+        self._anim_thumb_area.setWidgetResizable(True)
+        hl.addWidget(self._anim_thumb_area, 1)
+
+        # Init with single frame from current canvas
+        self._anim_timer = QTimer()
+        self._anim_timer.timeout.connect(self._anim_tick)
+        self._anim_init_frames()
+
+        return strip
+
+    def _anim_init_frames(self): #vers 1
+        """Initialise animation with the current canvas as frame 0."""
+        if self.dp5_canvas and self.dp5_canvas.rgba:
+            self._frames = [bytearray(self.dp5_canvas.rgba)]
+        else:
+            w, h = self._canvas_width, self._canvas_height
+            self._frames = [bytearray(b'\x80\x80\x80\xff' * (w * h))]
+        self._frame_delays = [1000 // max(1, self.dp5_settings.get('anim_fps'))]
+        self._current_frame = 0
+        self._anim_refresh_thumbs()
+
+    def _anim_save_current_frame(self): #vers 1
+        """Write canvas rgba back into current frame buffer."""
+        if self.dp5_canvas and 0 <= self._current_frame < len(self._frames):
+            self._frames[self._current_frame] = bytearray(self.dp5_canvas.rgba)
+
+    def _anim_load_frame(self, idx: int): #vers 2
+        """Load frame idx onto the canvas."""
+        if not self.dp5_canvas: return
+        if not (0 <= idx < len(self._frames)): return
+        self._anim_save_current_frame()
+        self._current_frame = idx
+        rgba = self._frames[idx]
+        if len(rgba) == len(self.dp5_canvas.rgba):
+            self.dp5_canvas.rgba[:] = rgba
+        else:
+            self.dp5_canvas.rgba = bytearray(rgba)
+        # Update onion skin to previous frame
+        if self.dp5_canvas.onion_skin and idx > 0:
+            self.dp5_canvas.onion_rgba = bytearray(self._frames[idx-1])
+        elif self.dp5_canvas.onion_skin and len(self._frames) > 1:
+            self.dp5_canvas.onion_rgba = bytearray(self._frames[-1])
+        self.dp5_canvas.update()
+        self._anim_update_label()
+        self._anim_highlight_thumb(idx)
+
+    def _anim_update_label(self): #vers 1
+        if hasattr(self, '_anim_frame_lbl'):
+            self._anim_frame_lbl.setText(
+                f"Frame {self._current_frame+1}/{len(self._frames)}")
+
+    def _anim_refresh_thumbs(self): #vers 1
+        """Rebuild all frame thumbnails."""
+        if not hasattr(self, '_anim_thumb_layout'): return
+        # Clear
+        while self._anim_thumb_layout.count():
+            w = self._anim_thumb_layout.takeAt(0).widget()
+            if w: w.deleteLater()
+        # Rebuild
+        tw, th = 48, 36
+        for i, frame in enumerate(self._frames):
+            btn = QPushButton()
+            btn.setFixedSize(tw+4, th+4)
+            btn.setCheckable(True)
+            btn.setChecked(i == self._current_frame)
+            btn.setToolTip(f"Frame {i+1}")
+            # Draw thumbnail
+            from PyQt6.QtGui import QPixmap, QImage
+            w, h = self._canvas_width, self._canvas_height
+            if len(frame) == w*h*4:
+                qimg = QImage(bytes(frame), w, h, w*4, QImage.Format.Format_RGBA8888)
+                pix = QPixmap.fromImage(qimg).scaled(tw, th, Qt.AspectRatioMode.KeepAspectRatio)
+                btn.setIcon(QIcon(pix))
+                btn.setIconSize(pix.size())
+            btn.clicked.connect(lambda _, idx=i: self._anim_load_frame(idx))
+            btn.setStyleSheet(
+                f"QPushButton{{background:{'#4466aa' if i==self._current_frame else '#333'};"
+                "border:1px solid #666;border-radius:2px;padding:1px;}"
+                "QPushButton:checked{border:2px solid #88aaff;}")
+            self._anim_thumb_layout.addWidget(btn)
+        self._anim_thumb_layout.addStretch()
+        self._anim_update_label()
+
+    def _anim_highlight_thumb(self, idx: int): #vers 1
+        """Just update highlight without full rebuild."""
+        layout = self._anim_thumb_layout
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setChecked(i == idx)
+                item.widget().setStyleSheet(
+                    f"QPushButton{{background:{'#4466aa' if i==idx else '#333'};"
+                    "border:1px solid #666;border-radius:2px;padding:1px;}"
+                    "QPushButton:checked{border:2px solid #88aaff;}")
+
+    def _anim_add_frame(self): #vers 1
+        """Add a new frame (copy of current)."""
+        self._anim_save_current_frame()
+        new_frame = bytearray(self._frames[self._current_frame])
+        fps = self._anim_fps_spin.value() if hasattr(self,'_anim_fps_spin') else 12
+        self._frames.insert(self._current_frame+1, new_frame)
+        self._frame_delays.insert(self._current_frame+1, 1000//fps)
+        self._current_frame += 1
+        self._anim_load_frame(self._current_frame)
+        self._anim_refresh_thumbs()
+
+    def _anim_dup_frame(self): #vers 1
+        """Duplicate current frame at end."""
+        self._anim_save_current_frame()
+        self._frames.append(bytearray(self._frames[self._current_frame]))
+        fps = self._anim_fps_spin.value() if hasattr(self,'_anim_fps_spin') else 12
+        self._frame_delays.append(1000//fps)
+        self._anim_refresh_thumbs()
+
+    def _anim_del_frame(self): #vers 1
+        """Delete current frame (min 1 frame)."""
+        if len(self._frames) <= 1:
+            self._set_status("Cannot delete the only frame")
+            return
+        self._frames.pop(self._current_frame)
+        self._frame_delays.pop(self._current_frame)
+        self._current_frame = max(0, self._current_frame-1)
+        self._anim_load_frame(self._current_frame)
+        self._anim_refresh_thumbs()
+
+    def _anim_first(self): #vers 1
+        self._anim_load_frame(0)
+
+    def _anim_last(self): #vers 1
+        self._anim_load_frame(len(self._frames)-1)
+
+    def _anim_prev(self): #vers 1
+        self._anim_load_frame(max(0, self._current_frame-1))
+
+    def _anim_next(self): #vers 1
+        self._anim_load_frame(min(len(self._frames)-1, self._current_frame+1))
+
+    def _anim_toggle_play(self): #vers 1
+        if self._anim_playing:
+            self._anim_playing = False
+            self._anim_timer.stop()
+            if hasattr(self, '_anim_play_btn'):
+                self._anim_play_btn.setText("▶")
+            self._set_status("Animation stopped")
+        else:
+            self._anim_save_current_frame()
+            self._anim_playing = True
+            fps = self._anim_fps_spin.value() if hasattr(self,'_anim_fps_spin') else 12
+            self._anim_timer.start(1000 // fps)
+            if hasattr(self, '_anim_play_btn'):
+                self._anim_play_btn.setText("⏹")
+            self._set_status(f"Playing {len(self._frames)} frames @ {fps}fps")
+
+    def _anim_tick(self): #vers 1
+        """Advance to next frame during playback."""
+        if not self._anim_playing: return
+        next_f = (self._current_frame + 1) % len(self._frames)
+        self._current_frame = next_f
+        if self.dp5_canvas and len(self._frames[next_f]) == len(self.dp5_canvas.rgba):
+            self.dp5_canvas.rgba[:] = self._frames[next_f]
+            self.dp5_canvas.update()
+        self._anim_update_label()
+        self._anim_highlight_thumb(next_f)
+
+    def _anim_export_gif(self): #vers 1
+        """Export all frames as an animated GIF."""
+        if not self._frames: return
+        fps = self._anim_fps_spin.value() if hasattr(self,'_anim_fps_spin') else 12
+        delay = 1000 // fps  # ms per frame
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Animated GIF", "animation.gif", "GIF (*.gif)")
+        if not path: return
+        try:
+            from PIL import Image
+            w, h = self._canvas_width, self._canvas_height
+            pil_frames = []
+            for frame in self._frames:
+                if len(frame) == w*h*4:
+                    img = Image.frombytes('RGBA', (w,h), bytes(frame)).convert('RGBA')
+                    pil_frames.append(img)
+            if not pil_frames: return
+            pil_frames[0].save(
+                path, format='GIF', save_all=True,
+                append_images=pil_frames[1:],
+                duration=delay, loop=0, optimize=True)
+            self._set_status(
+                f"Exported GIF: {os.path.basename(path)}  "
+                f"{len(pil_frames)} frames @ {fps}fps")
+        except Exception as e:
+            QMessageBox.warning(self, "GIF Export Error", str(e))
+
+    def _anim_export_png_seq(self): #vers 1
+        """Export all frames as a numbered PNG sequence."""
+        if not self._frames: return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export PNG Sequence (base name)", "frame_0001.png", "PNG (*.png)")
+        if not path: return
+        try:
+            from PIL import Image
+            import re as _re
+            base = _re.sub(r'\d+\.png$', '', path)
+            w, h = self._canvas_width, self._canvas_height
+            for i, frame in enumerate(self._frames):
+                if len(frame) == w*h*4:
+                    img = Image.frombytes('RGBA',(w,h),bytes(frame))
+                    img.save(f"{base}{i+1:04d}.png", 'PNG')
+            self._set_status(f"Exported {len(self._frames)} PNG frames")
+        except Exception as e:
+            QMessageBox.warning(self, "PNG Sequence Error", str(e))
+
     def _apply_theme(self):
         try:
             app_settings = self.app_settings
@@ -6014,6 +7078,13 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
                 self._fgbg_swatch.swap()
         elif k == Qt.Key.Key_Delete:
             self._cut_selection()
+        # Animation shortcuts (only when anim strip visible)
+        elif k == Qt.Key.Key_Comma and hasattr(self,'_anim_strip') and self._anim_strip.isVisible():
+            self._anim_prev()
+        elif k == Qt.Key.Key_Period and hasattr(self,'_anim_strip') and self._anim_strip.isVisible():
+            self._anim_next()
+        elif k == Qt.Key.Key_Space and hasattr(self,'_anim_strip') and self._anim_strip.isVisible():
+            self._anim_toggle_play()
         else:
             super().keyPressEvent(e)
 
