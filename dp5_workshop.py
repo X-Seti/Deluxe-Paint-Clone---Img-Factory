@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# dp5_workshop.py - Version: 2 (Build 296)
+# dp5_workshop.py - Version: 2 (Build 299)
 # X-Seti - April 2026 - Deluxe Paint 5 Clone - Img Factory 1.6 bitmap editor.
 #
 # Merged from:
@@ -1368,6 +1368,26 @@ class DP5Canvas(QWidget):
             for y in range(0, sh+1, ch):
                 painter.drawLine(0, y, sw, y)
 
+        # Colour clash visualiser — highlight ZX Spectrum attribute violations
+        if getattr(self, '_show_clash', False) and self.cell_w == 8 and self.cell_h == 8:
+            cols_cells = self.tex_w // 8
+            rows_cells = self.tex_h // 8
+            painter.setOpacity(0.45)
+            for cy in range(rows_cells):
+                for cx in range(cols_cells):
+                    colours = set()
+                    for py in range(8):
+                        for px in range(8):
+                            i = ((cy*8+py)*self.tex_w + (cx*8+px))*4
+                            r,g,b,a = self.rgba[i:i+4]
+                            if a > 0:
+                                colours.add((r>>5, g>>5, b>>5))
+                    if len(colours) > 2:
+                        x0 = int(cx*8*z); y0 = int(cy*8*z)
+                        cw2 = max(1,int(8*z)); ch2 = max(1,int(8*z))
+                        painter.fillRect(x0, y0, cw2, ch2, QColor(255,0,0,160))
+            painter.setOpacity(1.0)
+
         # Shape / selection preview overlay (drag-to-draw tools only)
         shape_tools = (TOOL_LINE,
                        TOOL_RECT,     TOOL_FILLED_RECT,
@@ -2229,6 +2249,97 @@ class FGBGSwatch(QWidget):
 
 
 #  BrushManager — panel listing saved brushes, load/save/delete
+
+
+class _CanvasTextOverlay(QWidget):
+    """Inline text input that floats over the canvas — no dialog needed.
+    User types directly; Enter commits to canvas, Escape cancels."""
+
+    def __init__(self, editor, tx: int, ty: int, zoom: float, canvas, parent=None):
+        super().__init__(parent or editor)
+        self._editor = editor
+        self._tx = tx; self._ty = ty
+        self._zoom = zoom; self._canvas = canvas
+
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
+                            Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(4)
+
+        self._edit = QLineEdit()
+        self._edit.setPlaceholderText("Type text…")
+        self._edit.setMinimumWidth(120)
+        self._edit.returnPressed.connect(self._commit)
+        self._edit.setStyleSheet(
+            "QLineEdit { background:#1a1a1a; color:#ffffff; border:1px solid #00aaff;"
+            " padding:2px 4px; font-size:11px; }")
+
+        self._size_spin = QSpinBox()
+        self._size_spin.setRange(4, 200)
+        self._size_spin.setValue(12)
+        self._size_spin.setFixedWidth(44)
+        self._size_spin.setToolTip("Font size (px)")
+        self._size_spin.setStyleSheet("QSpinBox { background:#1a1a1a; color:#fff; border:1px solid #555; }")
+
+        ok_btn = QPushButton("✓")
+        ok_btn.setFixedSize(22, 22)
+        ok_btn.clicked.connect(self._commit)
+        ok_btn.setStyleSheet("QPushButton { background:#004488; color:#fff; border:none; }"
+                             "QPushButton:hover { background:#0066cc; }")
+        esc_btn = QPushButton("✕")
+        esc_btn.setFixedSize(22, 22)
+        esc_btn.clicked.connect(self.close)
+        esc_btn.setStyleSheet("QPushButton { background:#440000; color:#fff; border:none; }"
+                              "QPushButton:hover { background:#880000; }")
+
+        lay.addWidget(self._edit)
+        lay.addWidget(self._size_spin)
+        lay.addWidget(ok_btn)
+        lay.addWidget(esc_btn)
+        self.adjustSize()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(e)
+
+    def _commit(self): #vers 1
+        """Blit the typed text onto the canvas at (tx, ty)."""
+        text = self._edit.text().strip()
+        if not text:
+            self.close(); return
+        fs = self._size_spin.value()
+        ed = self._editor
+        if not ed.dp5_canvas:
+            self.close(); return
+        ed._push_undo()
+        tmp = QImage(ed._canvas_width, ed._canvas_height,
+                     QImage.Format.Format_RGBA8888)
+        tmp.fill(Qt.GlobalColor.transparent)
+        p = QPainter(tmp)
+        font = QFont("Arial", fs)
+        p.setFont(font)
+        p.setPen(ed.dp5_canvas.color)
+        p.drawText(self._tx, self._ty + fs, text)
+        p.end()
+        for row in range(ed._canvas_height):
+            for col in range(ed._canvas_width):
+                pix = tmp.pixel(col, row)
+                a = (pix >> 24) & 0xFF
+                if a > 0:
+                    i = (row * ed._canvas_width + col) * 4
+                    ed.dp5_canvas.rgba[i]   = (pix >> 16) & 0xFF
+                    ed.dp5_canvas.rgba[i+1] = (pix >>  8) & 0xFF
+                    ed.dp5_canvas.rgba[i+2] =  pix        & 0xFF
+                    ed.dp5_canvas.rgba[i+3] = a
+        ed.dp5_canvas.update()
+        ed._set_status(f"Text: '{text}' at {self._tx},{self._ty}")
+        self.close()
 
 
 class BrushManager(QWidget):
@@ -3274,7 +3385,8 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self._symmetry_mode = 'off'  # cycles: off → H → V → quad
         self._platform_mode = 'none'
         self._enforce_constraints = False
-        self._pal_dither_mode = 'off'   # 'off'|'floyd'|'bayer'|'checker'
+        self._pal_dither_mode = 'off'
+        self._show_clash_overlay = False   # 'off'|'floyd'|'bayer'|'checker'
         self._canvas_mode   = 'free'
         self._mode_locked   = False
         self._mode_btns     = {}
@@ -3840,6 +3952,14 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         os_act.setCheckable(True); os_act.setChecked(False)
         os_act.triggered.connect(self._toggle_onion_skin)
         vm.addSeparator()
+        clash_act = vm.addAction("Colour clash visualiser")
+        clash_act.setCheckable(True); clash_act.setChecked(False)
+        clash_act.triggered.connect(self._toggle_clash_visualiser)
+        self._clash_act = clash_act
+        vm.addSeparator()
+        vm.addAction("Character/Font Editor…", self._open_char_editor)
+        vm.addAction("Sprite Editor…",         self._open_sprite_editor)
+        vm.addSeparator()
         # Canvas mode
         cm = vm.addMenu("Canvas Mode")
         for mode_id, mode_label in [
@@ -3863,12 +3983,21 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
                 sub.addAction(name, lambda m=mode: self._set_platform(m))
 
         _pm("Amiga", [
-            ("OCS LowRes  320×256  32col",   'amiga'),
-            ("ECS          320×256  64col",   'amiga_ecs'),
-            ("AGA          320×256  256col",  'amiga_aga'),
-            ("HAM6         320×256  4096col", 'amiga_ham'),
-            ("HAM8         320×256  16Mcol",  'amiga_ham8'),
-            ("RTG WB       640×480",          'amiga_rtg'),
+            ("OCS PAL LowRes  320×256  32col",  'amiga'),
+            ("OCS NTSC LowRes 320×200  32col",  'amiga_ntsc'),
+            ("OCS PAL HiRes   640×256  32col",  'amiga_hi'),
+            ("OCS PAL LoRes interlace 320×512", 'amiga_lace'),
+            ("ECS PAL          320×256  64col", 'amiga_ecs'),
+            ("ECS PAL HiRes    640×256  64col", 'amiga_ecs_hi'),
+            ("AGA PAL          320×256  256col",'amiga_aga'),
+            ("AGA PAL HiRes    640×256  256col",'amiga_aga_hi'),
+            ("HAM6             320×256  4096col",'amiga_ham'),
+            ("HAM8             320×256  16Mcol", 'amiga_ham8'),
+            ("RTG 640×480",                      'amiga_rtg'),
+            ("RTG 800×600",                      'amiga_rtg_800'),
+            ("RTG 1024×768",                     'amiga_rtg_1024'),
+            ("RTG 720×576 PAL broadcast",        'amiga_rtg_pal'),
+            ("RTG 720×480 NTSC broadcast",       'amiga_rtg_ntsc'),
         ])
         _pm("Commodore", [
             ("C64 Hires    320×200  2col/cell", 'c64'),
@@ -4553,6 +4682,15 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         'amiga_ham':   (1,  1,   4096),
         'amiga_ham8':  (1,  1,   16777216),
         'amiga_rtg':   (1,  1,   256),
+        'amiga_ntsc':  (8,  1,   32),    # OCS NTSC 320×200
+        'amiga_hi':    (16, 1,   32),    # OCS HiRes 640×256
+        'amiga_lace':  (8,  1,   32),    # OCS PAL interlace 320×512
+        'amiga_ecs_hi':(16, 1,   64),    # ECS HiRes 640×256
+        'amiga_aga_hi':(16, 1,   256),   # AGA HiRes 640×256
+        'amiga_rtg_800':  (1,1,  256),   # RTG 800×600
+        'amiga_rtg_1024': (1,1,  256),   # RTG 1024×768
+        'amiga_rtg_pal':  (1,1,  256),   # RTG 720×576 PAL
+        'amiga_rtg_ntsc': (1,1,  256),   # RTG 720×480 NTSC
         'c64':         (8,  8,   2),
         'c64m':        (4,  8,   4),
         'spectrum':    (8,  8,   2),
@@ -4584,6 +4722,18 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         'plus4':       (8,  8,   2),
         'vic20':       (8,  8,   2),
         'nimbus':      (4,  4,   16),
+        'nimbus_hi':   (4,  4,   16),   # Nimbus 640×250
+        'nes':         (8,  8,   4),    # NES 256×240, 4col/8×8 tile
+        'snes':        (8,  8,   16),   # SNES 256×224, 16col/8×8 tile
+        'game_boy':    (8,  8,   4),    # GB 160×144, 4 shades
+        'game_boy_pocket':(8,8,  4),
+        'game_boy_color': (8,8,  4),    # GBC 160×144
+        'game_boy_advance':(8,8, 4),    # GBA 240×160
+        'sg1000':      (8,  8,   16),   # SG-1000 256×192
+        'master_sys':  (8,  8,   16),   # Master System 256×192
+        'mega_drive':  (8,  8,   16),   # Mega Drive 320×224
+        'game_gear':   (8,  8,   16),   # Game Gear 160×144
+        'pc_engine':   (8,  8,   16),   # PC Engine 256×240
     }
 
     def _set_platform(self, mode: str): #vers 4
@@ -4618,7 +4768,12 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             'atari_lynx': 'Atari Lynx',
             'atari_falcon': 'Atari Falcon',
             'atari_jaguar': 'Atari Jaguar',
-            'amiga': 'Amiga OCS', 'amiga_ecs': 'Amiga ECS',
+            'amiga': 'Amiga OCS', 'amiga_ntsc': 'Amiga OCS',
+            'amiga_hi': 'Amiga OCS', 'amiga_lace': 'Amiga OCS',
+            'amiga_ecs': 'Amiga ECS', 'amiga_ecs_hi': 'Amiga ECS',
+            'amiga_aga_hi': 'Amiga AGA',
+            'amiga_rtg_800': 'Amiga AGA WB', 'amiga_rtg_1024': 'Amiga AGA WB',
+            'amiga_rtg_pal': 'Amiga AGA WB', 'amiga_rtg_ntsc': 'Amiga AGA WB',
             'amiga_aga': 'Amiga AGA',
             'amiga_ham': 'Amiga OCS',
             'amiga_ham8': 'Amiga AGA',
@@ -4641,16 +4796,30 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             'cpc':         (160, 200), 'cpc1':        (320, 200),
             'cpc_plus':    (320, 200), 'pcw':         (720, 256),
             'nc':          (480, 128),
-            'atari_2600':  (160,  96), 'atari_st':    (320, 200),
+            'atari_2600':  (160, 192),  # NTSC standard kernel 'atari_st':    (320, 200),
             'atari_ste':   (320, 200), 'atari_800':   (320, 192),
-            'atari_5200':  (320, 192), 'atari_7800':  (320, 200),
-            'atari_lynx':  (160, 102), 'atari_falcon': (320, 200),
+            'atari_5200':  (320, 192), 'atari_7800':  (160, 240),  # 160×240 NTSC most common
+            'atari_lynx':  (160, 102), 'atari_falcon': (320, 200), 'atari_falcon_hi': (640, 480),
             'atari_jaguar': (320, 240),
-            'amiga':       (320, 256), 'amiga_ecs':   (320, 256),
+            'amiga':       (320, 256), 'amiga_ntsc':  (320, 200),
+            'amiga_hi':    (640, 256), 'amiga_lace':  (320, 512),
+            'amiga_ecs':   (320, 256), 'amiga_ecs_hi':(640, 256),
+            'amiga_aga_hi':(640, 256),
+            'amiga_rtg_800':  (800, 600), 'amiga_rtg_1024': (1024, 768),
+            'amiga_rtg_pal':  (720, 576), 'amiga_rtg_ntsc': (720, 480),
             'amiga_aga':   (320, 256), 'amiga_ham':   (320, 256),
             'amiga_ham8':  (320, 256), 'amiga_rtg':   (640, 480),
             'plus4':       (320, 200), 'vic20':       (176, 184),
-            'nimbus':      (320, 250),
+            'nes':         (256, 240), 'snes':        (256, 224),
+            'game_boy':    (160, 144), 'game_boy_pocket': (160, 144),
+            'game_boy_color': (160, 144), 'game_boy_advance': (240, 160),
+            'nimbus':      (320, 250), 'nimbus_hi':   (640, 250),
+            'nes':         (256, 240), 'snes':        (256, 224),
+            'game_boy':    (160, 144), 'game_boy_pocket': (160, 144),
+            'game_boy_color': (160, 144), 'game_boy_advance': (240, 160),
+            'sg1000':      (256, 192), 'master_sys':  (256, 192),
+            'mega_drive':  (320, 224), 'game_gear':   (160, 144),
+            'pc_engine':   (256, 240), 'nimbus_hi': (640, 250),
         }
         if mode in _plat_res and self.dp5_canvas:
             pw, ph = _plat_res[mode]
@@ -4818,6 +4987,32 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         # Also activate the zoom tool
         self._select_tool(TOOL_ZOOM)
 
+    # ── Colour Clash Visualiser ───────────────────────────────────────────────
+
+    def _toggle_clash_visualiser(self, on: bool): #vers 1
+        """Toggle ZX Spectrum colour clash overlay — red = more than 2 colours in 8×8 cell."""
+        if self.dp5_canvas:
+            self.dp5_canvas._show_clash = on
+            self.dp5_canvas.update()
+        if on:
+            self._set_status("Clash visualiser ON — red cells have >2 colours")
+        else:
+            self._set_status("Clash visualiser OFF")
+
+    # ── Character / Font Editor ───────────────────────────────────────────────
+
+    def _open_char_editor(self): #vers 1
+        """Open the character/font editor — edit 8×8 or 8×16 pixel character sets."""
+        dlg = _CharFontEditor(self)
+        dlg.show()
+
+    # ── Sprite Editor ─────────────────────────────────────────────────────────
+
+    def _open_sprite_editor(self): #vers 1
+        """Open sprite editor — view/edit sprites with platform constraints."""
+        dlg = _SpriteEditor(self)
+        dlg.show()
+
     def _toggle_anim_strip(self, on: bool): #vers 1
         self.dp5_settings.set('show_anim_strip', on)
         self.dp5_settings.save()
@@ -4839,38 +5034,32 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self._enforce_constraints = not getattr(self, '_enforce_constraints', False)
         self._set_status(f"Colour constraints: {'ON' if self._enforce_constraints else 'OFF'}")
 
-    def _place_text_at(self, tx: int, ty: int):
-        """Prompt for text string and paint it onto the canvas at tex coords."""
+    def _place_text_at(self, tx: int, ty: int): #vers 2
+        """Show inline text input overlay on canvas at click position."""
         if not self.dp5_canvas: return
-        text, ok = QInputDialog.getText(self, "Place Text", "Text:")
-        if not ok or not text: return
+        ed = self
+        z = self.dp5_canvas.zoom
 
-        font_size, ok2 = QInputDialog.getInt(self, "Font Size", "Size (pixels):", 12, 4, 200)
-        if not ok2: return
+        # Create floating text entry if not already visible
+        if hasattr(self, '_text_overlay') and self._text_overlay and \
+                self._text_overlay.isVisible():
+            self._text_overlay.close()
 
-        self._push_undo()
-        # Render text onto a QImage then blit onto canvas
-        tmp = QImage(self._canvas_width, self._canvas_height,
-                     QImage.Format.Format_RGBA8888)
-        tmp.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(tmp)
-        painter.setFont(QFont("Arial", font_size))
-        painter.setPen(self.dp5_canvas.color)
-        painter.drawText(tx, ty + font_size, text)
-        painter.end()
-        # Composite onto canvas
-        for row in range(min(self._canvas_height, tmp.height())):
-            for col in range(min(self._canvas_width, tmp.width())):
-                pix = tmp.pixel(col, row)
-                a = (pix >> 24) & 0xFF
-                if a > 0:
-                    i = (row * self._canvas_width + col) * 4
-                    self.dp5_canvas.rgba[i]   = (pix >> 16) & 0xFF
-                    self.dp5_canvas.rgba[i+1] = (pix >>  8) & 0xFF
-                    self.dp5_canvas.rgba[i+2] =  pix        & 0xFF
-                    self.dp5_canvas.rgba[i+3] = a
-        self.dp5_canvas.update()
-        self._set_status(f"Text placed at {tx},{ty}")
+        overlay = _CanvasTextOverlay(self, tx, ty, z, self.dp5_canvas)
+        self._text_overlay = overlay
+        # Position the overlay widget over the canvas at the click point
+        canvas_widget = self.dp5_canvas
+        px = int(tx * z)
+        py = int(ty * z)
+        # Map to scroll area viewport coords
+        sa = getattr(self, '_canvas_scroll', None)
+        if sa:
+            px -= sa.horizontalScrollBar().value()
+            py -= sa.verticalScrollBar().value()
+        pos = canvas_widget.mapTo(self, canvas_widget.pos())
+        overlay.move(pos.x() + px, pos.y() + py)
+        overlay.show()
+        overlay.setFocus()
 
     def _toggle_brush_manager(self):
         """Show/hide the brush manager as a floating panel."""
@@ -6324,15 +6513,23 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         # ── Platform tab ───────────────────────────────────────────────────
         PLATFORM_PRESETS = [
             ("Custom",                    0,   0,  3),
-            ("── Amiga ──",               0,   0,  0),
-            ("Amiga OCS LowRes 320×256", 320, 256,  3),
-            ("Amiga OCS HiRes  640×256", 640, 256,  3),
-            ("Amiga OCS LowRes 320×200", 320, 200,  3),
-            ("Amiga AGA        320×256", 320, 256,  3),
-            ("Amiga AGA HiRes  640×512", 640, 512,  3),
-            ("── Commodore 64 ──",         0,   0,  0),
-            ("C64 Hires      320×200",   320, 200,  3),
-            ("C64 Multicolor 160×200",   160, 200,  3),
+            ("── Amiga ──",                    0,   0,  0),
+            ("OCS PAL LowRes    320×256",   320, 256,  3),
+            ("OCS NTSC LowRes   320×200",   320, 200,  3),
+            ("OCS PAL HiRes     640×256",   640, 256,  3),
+            ("OCS PAL Lace      320×512",   320, 512,  3),
+            ("ECS PAL LowRes    320×256",   320, 256,  3),
+            ("ECS PAL HiRes     640×256",   640, 256,  3),
+            ("AGA PAL LowRes    320×256",   320, 256,  3),
+            ("AGA PAL HiRes     640×256",   640, 256,  3),
+            ("RTG 640×480",                 640, 480,  3),
+            ("RTG 800×600",                 800, 600,  3),
+            ("RTG 1024×768",               1024, 768,  3),
+            ("RTG 720×576 PAL broadcast",   720, 576,  3),
+            ("RTG 720×480 NTSC broadcast",  720, 480,  3),
+            ("── Commodore 64 ──",            0,   0,  0),
+            ("C64 Hires      320×200",      320, 200,  3),
+            ("C64 Multicolor 160×200",      160, 200,  3),
             ("── ZX Spectrum ──",          0,   0,  0),
             ("Spectrum 48K   256×192",   256, 192,  3),
             ("Spectrum 128K  256×192",   256, 192,  3),
@@ -6356,15 +6553,16 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             ("PCW            720×256",   720, 256,  3),
             ("NC100/200      480×128",   480, 128,  3),
             ("── Atari ──",                0,   0,  0),
-            ("Atari 2600     160×96",    160,  96,  3),
+            ("Atari 2600 NTSC 160×192",  160, 192,  3),
             ("Atari 800/XL   320×192",   320, 192,  3),
             ("Atari 5200     320×192",   320, 192,  3),
-            ("Atari 7800     320×200",   320, 200,  3),
+            ("Atari 7800      160×240",  160, 240,  3),
             ("Atari ST Low   320×200",   320, 200,  3),
             ("Atari ST Med   640×200",   640, 200,  3),
             ("Atari STe Low  320×200",   320, 200,  3),
             ("Atari Lynx     160×102",   160, 102,  3),
-            ("Atari Falcon   320×200",   320, 200,  3),
+            ("Atari Falcon LowRes 320×200", 320, 200, 3),
+            ("Atari Falcon HiRes  640×480", 640, 480, 3),
             ("Atari Jaguar   320×240",   320, 240,  3),
             ("── Plus/4 ──",               0,   0,  0),
             ("Plus/4 Hires   320×200",   320, 200,  3),
@@ -6373,8 +6571,24 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             ("VIC-20         176×184",   176, 184,  3),
             ("── Sinclair QL ──",           0,   0,  0),
             ("QL Low         256×256",   256, 256,  3),
+            ("── Nintendo ──",              0,   0,  0),
+            ("NES            256×240",   256, 240,  3),
+            ("SNES           256×224",   256, 224,  3),
+            ("SNES HiRes     512×224",   512, 224,  3),
+            ("Game Boy        160×144",  160, 144,  3),
+            ("Game Boy Color  160×144",  160, 144,  3),
+            ("Game Boy Adv    240×160",  240, 160,  3),
+            ("── Sega ──",                  0,   0,  0),
+            ("SG-1000        256×192",   256, 192,  3),
+            ("Master System  256×192",   256, 192,  3),
+            ("Mega Drive     320×224",   320, 224,  3),
+            ("Game Gear      160×144",   160, 144,  3),
+            ("── NEC ──",                   0,   0,  0),
+            ("PC Engine      256×240",   256, 240,  3),
+            ("PC Engine CD   256×240",   256, 240,  3),
             ("── RM Nimbus ──",             0,   0,  0),
             ("Nimbus LowRes  320×250",   320, 250,  3),
+            ("Nimbus HiRes   640×250",   640, 250,  3),
         ]
         plat_tab, plat_w, plat_h, plat_d, plat_f, plat_pc = make_preset_tab(
             PLATFORM_PRESETS, 320, 200, 3)
@@ -8263,50 +8477,64 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Amiga Info Import Error", str(e))
 
-    def _decode_amiga_info(self, data: bytes): #vers 1
-        """Decode Amiga .info to (rgba, w, h, format_name) or (None,0,0,reason)."""
+    def _decode_amiga_info(self, data: bytes): #vers 2
+        """Decode Amiga .info to (rgba, w, h, format_name) or (None,0,0,reason).
+        Based on official AmigaOS SDK DiskObject/Gadget/Image struct layout."""
         import struct
-        if len(data) < 80 or data[0:2] != bytes([0xE3, 0x10]):
+        if len(data) < 78 or data[0:2] != bytes([0xE3, 0x10]):
             return None, 0, 0, "Not a valid .info file"
+        # DiskObject: Gadget.Width @12, Gadget.Height @14
+        # Gadget.GadgetRender @22, Gadget.SelectRender @26
+        # do_DrawerData @66 — if non-null, 56-byte DrawerData follows DiskObject
         w = struct.unpack_from('>H', data, 12)[0]
         h = struct.unpack_from('>H', data, 14)[0]
         if w == 0 or h == 0 or w > 1024 or h > 1024:
-            return None, 0, 0, f"Invalid dimensions {w}x{h}"
-        AGA_WB = [
-            (0,0,0,0),(255,255,255,255),(85,170,255,255),(255,136,0,255),
-            (170,170,170,255),(0,0,170,255),(255,85,0,255),(170,0,170,255),
-            (85,85,85,255),(0,170,170,255),(170,85,0,255),(0,170,0,255),
-            (170,0,0,255),(0,85,170,255),(255,255,85,255),(255,85,85,255),
-        ]
+            return None, 0, 0, f"Invalid dimensions {w}×{h}"
+        drawer_ptr = struct.unpack_from('>I', data, 66)[0]
+        # ── NewIcon ───────────────────────────────────────────────────
         if b'IM1=' in data:
             try:
                 rgba = self._decode_newicon_im1(data, w, h)
                 if rgba: return rgba, w, h, 'NewIcon-IM1'
             except Exception:
                 pass
+        # ── OS3.5 ICONFACE ────────────────────────────────────────────
         if b':ICONFACE' in data:
-            return None, 0, 0, "OS3.5-ICONFACE (proprietary, not supported)"
-        drawer_ptr = struct.unpack_from('>I', data, 66)[0]
+            return None, 0, 0, "OS3.5-ICONFACE (proprietary format)"
+        # ── Classic bitplane icon ─────────────────────────────────────
+        # After DiskObject: [DrawerData(56)] + Image struct(20) + bitplanes
+        # Image struct: [4:6]=Width [6:8]=Height [8:10]=Depth [14]=PlanePick
         base = 78 + (56 if drawer_ptr else 0)
-        img_offset = base + 40
+        if base + 20 > len(data):
+            return None, 0, 0, "File truncated at Image struct"
+        img_depth = struct.unpack_from('>H', data, base + 8)[0]
+        if img_depth == 0 or img_depth > 8:
+            img_depth = 4
+        data_off = base + 20
         row_bytes = ((w + 15) // 16) * 2
-        depth = 4
-        needed = row_bytes * h * depth
-        if img_offset + needed > len(data):
-            depth = 2
-            needed = row_bytes * h * depth
-            if img_offset + needed > len(data):
-                return None, 0, 0, "File too small for bitplane data"
+        plane_size = row_bytes * h
+        depth = img_depth
+        for try_d in [img_depth, 4, 2]:
+            if data_off + plane_size * try_d <= len(data):
+                depth = try_d; break
+        else:
+            return None, 0, 0, "File too small for bitplane data"
+        AGA_WB = [
+            (0,0,0,0),(255,255,255,255),(85,170,255,255),(255,136,0,255),
+            (170,170,170,255),(0,0,170,255),(255,85,0,255),(170,0,170,255),
+            (85,85,85,255),(0,170,170,255),(170,85,0,255),(0,170,0,255),
+            (170,0,0,255),(0,85,170,255),(255,255,85,255),(255,85,85,255),
+        ]
         rgba = bytearray(w * h * 4)
         for y in range(h):
             for x in range(w):
                 px = 0
                 for p in range(depth):
-                    off = img_offset + p*(row_bytes*h) + y*row_bytes + x//8
+                    off = data_off + p * plane_size + y * row_bytes + x // 8
                     if off < len(data) and data[off] & (0x80 >> (x % 8)):
                         px |= (1 << p)
-                c = AGA_WB[px % len(AGA_WB)]
-                i = (y*w+x)*4
+                c = AGA_WB[px % 16]
+                i = (y * w + x) * 4
                 rgba[i:i+4] = c
         return bytes(rgba), w, h, f'Classic-{depth}bp'
 
@@ -9524,6 +9752,497 @@ def open_dp5_workshop(main_window=None) -> DP5Workshop:
             QMessageBox.critical(main_window, App_name + " Error", str(e))
         return None
 
+
+
+#  Character / Font Editor
+
+class _CharFontEditor(QDialog):
+    """Edit 8×8 or 8×16 pixel character sets — bit grid per character,
+    load/save binary, export as C header or ASM data."""
+
+    CELL = 24   # display pixels per bit-cell
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Character / Font Editor")
+        self.setMinimumSize(700, 520)
+        self._char_w = 8
+        self._char_h = 8
+        self._n_chars = 128
+        # Each char: list of n_chars lists, each char_h bytes
+        self._chars = [[0]*self._char_h for _ in range(self._n_chars)]
+        self._current = 0
+        self._build_ui()
+        self._refresh_grid()
+        self._refresh_char_list()
+
+    def _build_ui(self):
+        lay = QHBoxLayout(self)
+
+        # ── Left: character list ─────────────────────────────────────
+        left = QVBoxLayout()
+        hl = QHBoxLayout()
+        hl.addWidget(QLabel("Char set:"))
+        self._size_combo = QComboBox()
+        self._size_combo.addItems(["8×8","8×16"])
+        self._size_combo.currentTextChanged.connect(self._on_size_change)
+        hl.addWidget(self._size_combo)
+        left.addLayout(hl)
+
+        self._char_list = QListWidget()
+        self._char_list.setFixedWidth(110)
+        self._char_list.currentRowChanged.connect(self._on_char_select)
+        left.addWidget(self._char_list)
+
+        btn_row = QHBoxLayout()
+        clr_btn = QPushButton("Clear")
+        clr_btn.clicked.connect(self._clear_char)
+        inv_btn = QPushButton("Invert")
+        inv_btn.clicked.connect(self._invert_char)
+        btn_row.addWidget(clr_btn); btn_row.addWidget(inv_btn)
+        left.addLayout(btn_row)
+
+        shift_row = QHBoxLayout()
+        for lbl, fn in [("←",self._shift_l),("→",self._shift_r),
+                        ("↑",self._shift_u),("↓",self._shift_d)]:
+            b = QPushButton(lbl); b.setFixedWidth(28)
+            b.clicked.connect(fn); shift_row.addWidget(b)
+        left.addLayout(shift_row)
+        lay.addLayout(left)
+
+        # ── Centre: bit grid ─────────────────────────────────────────
+        centre = QVBoxLayout()
+        self._grid_widget = _CharGrid(self)
+        self._grid_widget.bit_toggled.connect(self._on_bit_toggle)
+        centre.addWidget(self._grid_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._hex_label = QLabel("Hex: 00 00 00 00 00 00 00 00")
+        self._hex_label.setFont(QFont("Courier", 9))
+        centre.addWidget(self._hex_label)
+        lay.addLayout(centre)
+
+        # ── Right: actions ───────────────────────────────────────────
+        right = QVBoxLayout()
+        right.addWidget(QLabel("File:"))
+
+        load_btn = QPushButton("Load binary…")
+        load_btn.clicked.connect(self._load_binary)
+        save_btn = QPushButton("Save binary…")
+        save_btn.clicked.connect(self._save_binary)
+        c_btn = QPushButton("Export C header…")
+        c_btn.clicked.connect(self._export_c)
+        asm_btn = QPushButton("Export ASM…")
+        asm_btn.clicked.connect(self._export_asm)
+        canvas_btn = QPushButton("→ Paint canvas")
+        canvas_btn.clicked.connect(self._stamp_to_canvas)
+        canvas_btn.setToolTip("Stamp current character onto paint canvas at top-left")
+
+        for b in (load_btn,save_btn,c_btn,asm_btn,canvas_btn):
+            right.addWidget(b)
+
+        right.addSpacing(12)
+        right.addWidget(QLabel("Preview:"))
+        self._preview = QLabel()
+        self._preview.setFixedSize(64,64)
+        self._preview.setStyleSheet("background:#000; border:1px solid #555;")
+        right.addWidget(self._preview)
+        right.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        right.addWidget(close_btn)
+        lay.addLayout(right)
+
+    def _on_size_change(self, txt):
+        self._char_h = 16 if txt == "8×16" else 8
+        self._chars = [[0]*self._char_h for _ in range(self._n_chars)]
+        self._grid_widget.set_size(self._char_w, self._char_h)
+        self._refresh_char_list()
+        self._on_char_select(0)
+
+    def _on_char_select(self, idx):
+        if 0 <= idx < self._n_chars:
+            self._current = idx
+            self._grid_widget.set_data(self._chars[idx])
+            self._refresh_hex()
+            self._refresh_preview()
+
+    def _on_bit_toggle(self, row, col, val):
+        ch = self._chars[self._current]
+        if val: ch[row] |=  (0x80 >> col)
+        else:   ch[row] &= ~(0x80 >> col)
+        self._refresh_hex()
+        self._refresh_preview()
+
+    def _refresh_grid(self):
+        self._grid_widget.set_size(self._char_w, self._char_h)
+        self._grid_widget.set_data(self._chars[self._current])
+
+    def _refresh_char_list(self):
+        self._char_list.clear()
+        for i in range(self._n_chars):
+            ch = chr(i) if 32 <= i < 127 else f"[{i}]"
+            self._char_list.addItem(f"{i:3d} {ch}")
+        self._char_list.setCurrentRow(self._current)
+
+    def _refresh_hex(self):
+        ch = self._chars[self._current]
+        self._hex_label.setText("Hex: " + " ".join(f"{b:02X}" for b in ch))
+
+    def _refresh_preview(self):
+        from PIL import Image
+        ch = self._chars[self._current]
+        img = Image.new('RGB', (self._char_w, self._char_h), (0,0,0))
+        px = img.load()
+        for row, byte in enumerate(ch):
+            for col in range(self._char_w):
+                if byte & (0x80 >> col):
+                    px[col, row] = (0, 255, 0)
+        img = img.resize((64, 64), Image.NEAREST)
+        from PyQt6.QtGui import QPixmap
+        import io
+        buf = io.BytesIO(); img.save(buf, 'PNG'); buf.seek(0)
+        pm = QPixmap(); pm.loadFromData(buf.read())
+        self._preview.setPixmap(pm)
+
+    def _clear_char(self):
+        self._chars[self._current] = [0]*self._char_h
+        self._grid_widget.set_data(self._chars[self._current])
+        self._refresh_hex(); self._refresh_preview()
+
+    def _invert_char(self):
+        ch = self._chars[self._current]
+        mask = (1<<self._char_w)-1
+        self._chars[self._current] = [((~b) & 0xFF) for b in ch]
+        self._grid_widget.set_data(self._chars[self._current])
+        self._refresh_hex(); self._refresh_preview()
+
+    def _shift_l(self):
+        ch = self._chars[self._current]
+        self._chars[self._current] = [((b<<1)&0xFF) for b in ch]
+        self._grid_widget.set_data(self._chars[self._current]); self._refresh_hex()
+
+    def _shift_r(self):
+        ch = self._chars[self._current]
+        self._chars[self._current] = [(b>>1) for b in ch]
+        self._grid_widget.set_data(self._chars[self._current]); self._refresh_hex()
+
+    def _shift_u(self):
+        ch = self._chars[self._current]
+        self._chars[self._current] = ch[1:] + [0]
+        self._grid_widget.set_data(self._chars[self._current]); self._refresh_hex()
+
+    def _shift_d(self):
+        ch = self._chars[self._current]
+        self._chars[self._current] = [0] + ch[:-1]
+        self._grid_widget.set_data(self._chars[self._current]); self._refresh_hex()
+
+    def _load_binary(self):
+        path, _ = QFileDialog.getOpenFileName(self,"Load charset","","Binary (*.bin *.chr *.fnt);;All Files (*)")
+        if not path: return
+        data = open(path,'rb').read()
+        char_size = self._char_h
+        n = min(self._n_chars, len(data)//char_size)
+        for i in range(n):
+            self._chars[i] = list(data[i*char_size:(i+1)*char_size])
+        self._on_char_select(self._current)
+
+    def _save_binary(self):
+        path, _ = QFileDialog.getSaveFileName(self,"Save charset","charset.bin","Binary (*.bin);;All (*)")
+        if not path: return
+        data = bytearray()
+        for ch in self._chars: data += bytearray(ch)
+        open(path,'wb').write(data)
+
+    def _export_c(self):
+        path, _ = QFileDialog.getSaveFileName(self,"Export C header","charset.h","C Header (*.h)")
+        if not path: return
+        lines = [f"/* {self._char_w}×{self._char_h} character set — {self._n_chars} chars */",
+                 f"const uint8_t charset[{self._n_chars}][{self._char_h}] = {{"]
+        for i,ch in enumerate(self._chars):
+            hex_row = ", ".join(f"0x{b:02X}" for b in ch)
+            comment = chr(i) if 32<=i<127 else f"#{i}"
+            lines.append(f"    {{ {hex_row} }},  /* {comment} */")
+        lines.append("};")
+        open(path,'w').write('\n'.join(lines)+'\n')
+
+    def _export_asm(self):
+        path, _ = QFileDialog.getSaveFileName(self,"Export ASM","charset.asm","ASM (*.asm *.s)")
+        if not path: return
+        lines = [f"; {self._char_w}×{self._char_h} charset — {self._n_chars} chars","charset:"]
+        for i,ch in enumerate(self._chars):
+            comment = chr(i) if 32<=i<127 else f"#{i}"
+            hex_row = ",".join(f"${b:02X}" for b in ch)
+            lines.append(f"    defb {hex_row}  ; {comment}")
+        open(path,'w').write('\n'.join(lines)+'\n')
+
+    def _stamp_to_canvas(self):
+        """Stamp current character onto the parent paint canvas."""
+        p = self.parent()
+        if not p or not hasattr(p,'dp5_canvas') or not p.dp5_canvas: return
+        ch = self._chars[self._current]
+        p._push_undo()
+        fg = p.dp5_canvas.color
+        r,g,b = fg.red(), fg.green(), fg.blue()
+        for row, byte in enumerate(ch):
+            for col in range(self._char_w):
+                if byte & (0x80>>col):
+                    if row < p._canvas_height and col < p._canvas_width:
+                        i = (row*p._canvas_width+col)*4
+                        p.dp5_canvas.rgba[i:i+4] = [r,g,b,255]
+        p.dp5_canvas.update()
+        p._set_status(f"Stamped char {self._current} to canvas")
+
+
+class _CharGrid(QWidget):
+    """Clickable bit grid for character editor."""
+    bit_toggled = pyqtSignal(int, int, bool)
+    CELL = 24
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._w = 8; self._h = 8
+        self._data = [0]*8
+        self._drawing = False; self._draw_val = True
+
+    def set_size(self, w, h):
+        self._w = w; self._h = h
+        self._data = [0]*h
+        self.setFixedSize(w*self.CELL+1, h*self.CELL+1)
+        self.update()
+
+    def set_data(self, data):
+        self._data = list(data)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        for row in range(self._h):
+            for col in range(self._w):
+                x = col*self.CELL; y = row*self.CELL
+                bit = bool(self._data[row] & (0x80>>col)) if row<len(self._data) else False
+                p.fillRect(x, y, self.CELL-1, self.CELL-1,
+                           QColor(0,220,0) if bit else QColor(20,20,20))
+                p.setPen(QPen(QColor(60,60,60)))
+                p.drawRect(x, y, self.CELL-1, self.CELL-1)
+
+    def _cell(self, pos):
+        return pos.x()//self.CELL, pos.y()//self.CELL
+
+    def mousePressEvent(self, e):
+        col, row = self._cell(e.position().toPoint())
+        if 0<=col<self._w and 0<=row<self._h:
+            bit = bool(self._data[row] & (0x80>>col))
+            self._draw_val = not bit
+            self._drawing = True
+            self.bit_toggled.emit(row, col, self._draw_val)
+            self.update()
+
+    def mouseMoveEvent(self, e):
+        if not self._drawing: return
+        col, row = self._cell(e.position().toPoint())
+        if 0<=col<self._w and 0<=row<self._h:
+            cur = bool(self._data[row] & (0x80>>col))
+            if cur != self._draw_val:
+                self.bit_toggled.emit(row, col, self._draw_val)
+                self.update()
+
+    def mouseReleaseEvent(self, e):
+        self._drawing = False
+
+
+#  Sprite Editor
+
+class _SpriteEditor(QDialog):
+    """View and edit sprites with platform native size constraints.
+    Shows the canvas sliced into sprite-sized frames."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Sprite Editor")
+        self.setMinimumSize(640, 480)
+        self._editor = parent
+        self._sprite_w = 16; self._sprite_h = 16
+        self._current_frame = 0
+        self._zoom = 4
+        self._build_ui()
+        self._refresh_frames()
+
+    def _build_ui(self):
+        lay = QHBoxLayout(self)
+
+        # ── Left: frame list ─────────────────────────────────────────
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Frames:"))
+        self._frame_list = QListWidget()
+        self._frame_list.setFixedWidth(80)
+        self._frame_list.currentRowChanged.connect(self._on_frame_select)
+        left.addWidget(self._frame_list)
+        lay.addLayout(left)
+
+        # ── Centre: sprite view ──────────────────────────────────────
+        centre = QVBoxLayout()
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("Sprite size:"))
+        sizes = ["8×8","8×16","16×16","16×32","32×32","32×64","64×64"]
+        self._size_combo = QComboBox()
+        self._size_combo.addItems(sizes)
+        self._size_combo.setCurrentText("16×16")
+        self._size_combo.currentTextChanged.connect(self._on_size_change)
+        ctrl.addWidget(self._size_combo)
+        ctrl.addWidget(QLabel("Zoom:"))
+        self._zoom_spin = QSpinBox()
+        self._zoom_spin.setRange(1,16); self._zoom_spin.setValue(4)
+        self._zoom_spin.valueChanged.connect(self._on_zoom)
+        ctrl.addWidget(self._zoom_spin)
+        ctrl.addStretch()
+        export_btn = QPushButton("Export sheet…")
+        export_btn.clicked.connect(self._export_sheet)
+        ctrl.addWidget(export_btn)
+        centre.addLayout(ctrl)
+
+        self._sprite_view = _SpriteView(self)
+        centre.addWidget(self._sprite_view, 1)
+
+        # Frame info
+        self._info_lbl = QLabel("Frame 0  —  0,0")
+        self._info_lbl.setFont(QFont("Courier",9))
+        centre.addWidget(self._info_lbl)
+        lay.addLayout(centre, 1)
+
+        # ── Right: platform presets ──────────────────────────────────
+        right = QVBoxLayout()
+        right.addWidget(QLabel("Platform:"))
+        presets = [
+            ("ZX Spectrum  16×16", 16,16),
+            ("C64 sprite   24×21", 24,21),
+            ("Amiga OCS    16×16", 16,16),
+            ("Amiga AGA    32×32", 32,32),
+            ("NES tile      8×8",   8, 8),
+            ("SNES tile     8×8",   8, 8),
+            ("Game Boy      8×8",   8, 8),
+            ("Mega Drive   32×32", 32,32),
+            ("PC Engine    16×16", 16,16),
+        ]
+        for lbl, w, h in presets:
+            b = QPushButton(lbl)
+            b.clicked.connect(lambda _,sw=w,sh=h: self._set_sprite_size(sw,sh))
+            right.addWidget(b)
+        right.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        right.addWidget(close_btn)
+        lay.addLayout(right)
+
+    def _on_size_change(self, txt):
+        w,h = map(int, txt.split("×"))
+        self._set_sprite_size(w, h)
+
+    def _set_sprite_size(self, w, h):
+        self._sprite_w = w; self._sprite_h = h
+        self._size_combo.setCurrentText(f"{w}×{h}" if f"{w}×{h}" in
+            [self._size_combo.itemText(i) for i in range(self._size_combo.count())] else
+            self._size_combo.currentText())
+        self._refresh_frames()
+
+    def _on_zoom(self, z):
+        self._zoom = z
+        self._sprite_view.set_zoom(z)
+
+    def _refresh_frames(self):
+        ed = self._editor
+        if not ed or not hasattr(ed,'dp5_canvas') or not ed.dp5_canvas: return
+        cw = ed._canvas_width; ch = ed._canvas_height
+        cols = max(1, cw // self._sprite_w)
+        rows = max(1, ch // self._sprite_h)
+        self._frame_list.clear()
+        self._frames = []
+        n = 0
+        for ry in range(rows):
+            for rx in range(cols):
+                self._frame_list.addItem(f"#{n:03d}")
+                self._frames.append((rx*self._sprite_w, ry*self._sprite_h))
+                n += 1
+        if n > 0:
+            self._frame_list.setCurrentRow(0)
+            self._on_frame_select(0)
+
+    def _on_frame_select(self, idx):
+        if idx < 0 or idx >= len(self._frames): return
+        self._current_frame = idx
+        ox, oy = self._frames[idx]
+        ed = self._editor
+        if not ed or not ed.dp5_canvas: return
+        # Extract sprite RGBA
+        cw = ed._canvas_width
+        sw = self._sprite_w; sh = self._sprite_h
+        sprite_rgba = bytearray(sw*sh*4)
+        for row in range(sh):
+            for col in range(sw):
+                sx = ox+col; sy = oy+row
+                if sx < cw and sy < ed._canvas_height:
+                    si = (sy*cw+sx)*4
+                    di = (row*sw+col)*4
+                    sprite_rgba[di:di+4] = ed.dp5_canvas.rgba[si:si+4]
+        self._sprite_view.set_sprite(sprite_rgba, sw, sh, self._zoom)
+        self._info_lbl.setText(
+            f"Frame {idx}  —  {ox},{oy}  ({sw}×{sh}px)")
+
+    def _export_sheet(self):
+        ed = self._editor
+        if not ed or not ed.dp5_canvas: return
+        path, _ = QFileDialog.getSaveFileName(self,"Export Sprite Sheet",
+            "sprites.png","PNG (*.png)")
+        if not path: return
+        from PIL import Image
+        img = Image.frombytes('RGBA',(ed._canvas_width,ed._canvas_height),
+                              bytes(ed.dp5_canvas.rgba))
+        sw = self._sprite_w; sh = self._sprite_h
+        n = len(self._frames)
+        cols_out = min(16, n); rows_out = (n+cols_out-1)//cols_out
+        out = Image.new('RGBA',(cols_out*sw, rows_out*sh),(0,0,0,0))
+        for i,(ox,oy) in enumerate(self._frames):
+            frame = img.crop((ox,oy,ox+sw,oy+sh))
+            dx = (i%cols_out)*sw; dy = (i//cols_out)*sh
+            out.paste(frame,(dx,dy))
+        out.save(path)
+        QMessageBox.information(self,"Export","Exported {n} sprites to {path}")
+
+
+class _SpriteView(QWidget):
+    """Zoomed sprite display widget."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rgba = None; self._w = 16; self._h = 16; self._zoom = 4
+        self.setMinimumSize(200,200)
+
+    def set_sprite(self, rgba, w, h, zoom):
+        self._rgba=rgba; self._w=w; self._h=h; self._zoom=zoom
+        self.setFixedSize(w*zoom+2, h*zoom+2)
+        self.update()
+
+    def set_zoom(self, z):
+        self._zoom=z
+        if self._rgba:
+            self.setFixedSize(self._w*z+2, self._h*z+2)
+        self.update()
+
+    def paintEvent(self, _):
+        if not self._rgba: return
+        p = QPainter(self)
+        z = self._zoom; w = self._w; h = self._h
+        for row in range(h):
+            for col in range(w):
+                i = (row*w+col)*4
+                r,g,b,a = self._rgba[i:i+4]
+                if a > 0:
+                    p.fillRect(col*z, row*z, z, z, QColor(r,g,b,a))
+                else:
+                    # Checkerboard for transparent
+                    shade = 160 if (row+col)%2==0 else 100
+                    p.fillRect(col*z, row*z, z, z, QColor(shade,shade,shade))
+        # Grid
+        p.setPen(QPen(QColor(60,60,60,180),1))
+        for x in range(0, w*z+1, z): p.drawLine(x,0,x,h*z)
+        for y in range(0, h*z+1, z): p.drawLine(0,y,w*z,y)
 
 
 #  Standalone entry point
