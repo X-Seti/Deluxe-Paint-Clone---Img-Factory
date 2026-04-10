@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# dp5_workshop.py - Version: 2 (Build 292c)
+# dp5_workshop.py - Version: 2 (Build 296)
 # X-Seti - April 2026 - Deluxe Paint 5 Clone - Img Factory 1.6 bitmap editor.
 #
 # Merged from:
@@ -1347,9 +1347,9 @@ class DP5Canvas(QWidget):
             painter.drawImage(0, 0, onion_scaled)
             painter.setOpacity(1.0)
 
-        # Pixel grid (only at zoom ≥4)
-        if self.show_grid and z >= 4:
-            iz = int(z)
+        # Pixel grid (visible at zoom ≥2)
+        if self.show_grid and z >= 2:
+            iz = max(1, int(z))
             pen = QPen(self.grid_color, 1)
             painter.setPen(pen)
             for x in range(0, sw, iz):
@@ -2004,15 +2004,15 @@ class PaletteGrid(QWidget):
         rows = max(1, (len(self._colors) + self._cols - 1) // self._cols)
         self.setFixedHeight(rows * self._cell + 1)
 
-    def set_colors(self, colors: List[QColor], cols: int = None): #vers 3
-        """Load a new colour list, optionally changing column count. Auto-scales cell+cols."""
+    def set_colors(self, colors: List[QColor], cols: int = None): #vers 4
+        """Load a new colour list. Auto-scales cell+cols for large palettes."""
         self._colors   = list(colors)
         self._selected = -1
         n = len(colors)
         if n >= 4096:
-            self._cell = 1; self._cols = 64    # 4096 = 64×64 at 1px = 64×64px
+            self._cell = 2; self._cols = 64    # 128×128px — visible 2px cells
         elif n >= 512:
-            self._cell = 2; self._cols = 32    # 512 = 32×16 at 2px = 64×32px
+            self._cell = 4; self._cols = 32    # 128×64px
         elif n > 256:
             self._cell = 4; self._cols = cols if cols else 16
         elif n > 64:
@@ -2022,7 +2022,7 @@ class PaletteGrid(QWidget):
         self._recalc_height()
         self.update()
 
-    def set_palette_raw(self, palette_data): #vers 3
+    def set_palette_raw(self, palette_data): #vers 4
         """Accept list of (r,g,b) tuples, QColors or hex strings. No size limit."""
         out = []
         for entry in palette_data:
@@ -2036,9 +2036,9 @@ class PaletteGrid(QWidget):
         self._selected = -1
         n = len(out)
         if n >= 4096:
-            self._cell = 1; self._cols = 64
+            self._cell = 2; self._cols = 64
         elif n >= 512:
-            self._cell = 2; self._cols = 32
+            self._cell = 4; self._cols = 32
         elif n > 256:
             self._cell = 4
         elif n > 64:
@@ -2060,13 +2060,12 @@ class PaletteGrid(QWidget):
     def paintEvent(self, event):
         p   = QPainter(self)
         cs  = self._cell
+        gap = 1 if cs >= 4 else 0   # no gap for small cells
         for i, col in enumerate(self._colors):
             x = (i % self._cols) * cs
             y = (i // self._cols) * cs
-            p.fillRect(x, y, cs - 1, cs - 1, col)
-            if i == self._selected:
-                # White inner highlight + dark outer border for visibility on
-                # both light and dark swatches
+            p.fillRect(x, y, max(1, cs - gap), max(1, cs - gap), col)
+            if i == self._selected and cs >= 4:
                 p.setPen(QPen(QColor(0, 0, 0), 1))
                 p.drawRect(x, y, cs - 2, cs - 2)
                 p.setPen(QPen(QColor(255, 255, 255), 1))
@@ -2761,35 +2760,15 @@ class ColorPalPresetsMixin:
             "#3AA241","#B766B5","#CCCCCC","#FFFFFF",
         ]
 
-        # SNES — 15-bit (5R 5G 5B), 32768 colours — show 64 samples
-        _snes_v = [0,8,16,25,33,41,49,58,66,74,82,90,99,107,115,123,
-                   132,140,148,156,165,173,181,189,197,206,214,222,230,239,247,255]
-        snes = [f"#{r:02X}{g:02X}{b:02X}"
-                for r in _snes_v[::4] for g in _snes_v[::4] for b in _snes_v[::4]][:64]
+        # SNES — 15-bit (5R 5G 5B), 32768 colours
+        # Correct 5-bit scale: val*8 + val//4 gives exact GameBoy/SNES levels
+        def _snes5(v): return min(255, v * 8 + v // 4)
+        _sv = [_snes5(i) for i in range(32)]
+        snes = [f"#{r:02X}{g:02X}{b:02X}" for r in _sv for g in _sv for b in _sv]
 
-        # Game Boy Color — 15-bit, 32768 colours — show representative palette
-        game_boy_color = [
-            "#FFFFFF","#FFEEAA","#FFCC55","#FFAA00",
-            "#FF8800","#FF5500","#FF0000","#CC0000",
-            "#AA0000","#880000","#550000","#330000",
-            "#FF88AA","#FF55AA","#FF00AA","#CC0088",
-            "#AA0066","#880044","#550022","#FF88FF",
-            "#FF55FF","#FF00FF","#CC00CC","#AA00AA",
-            "#8800AA","#5500AA","#2200AA","#0000FF",
-            "#0000CC","#0000AA","#000088","#000055",
-            "#0055FF","#0088FF","#00AAFF","#00CCFF",
-            "#00FFFF","#00FFCC","#00FFAA","#00FF88",
-            "#00FF55","#00FF00","#00CC00","#00AA00",
-            "#008800","#005500","#003300","#AAFFAA",
-            "#AAAAFF","#FFAAAA","#FFFFAA","#AAFFFF",
-            "#FFAAFF","#DDDDDD","#BBBBBB","#999999",
-            "#777777","#555555","#333333","#111111",
-            "#000000","#1A1A2E","#16213E","#0F3460",
-        ]
-
-        # Game Boy Advance — 15-bit, 240×160
-        # Same palette space as GBC, different screen
-        game_boy_advance = game_boy_color  # same colour space
+        # Game Boy Color / GBA — 15-bit (5R 5G 5B), 32768 colours — same scale as SNES
+        game_boy_color = snes   # identical colour space
+        game_boy_advance = snes  # identical colour space, different screen size
 
         # Motorola 6847 — CoCo 1/2, Dragon 32/64, BBC Micro (semi-graphics modes)
         m6847 = [
@@ -2825,15 +2804,14 @@ class ColorPalPresetsMixin:
             "#8888FF","#FFFF88","#FF88FF","#88FFFF","#FFAA88","#AAFFAA","#AAAABB","#CCAACC",
         ]
 
-        # MSX2 V9938 — 9-bit palette (3R 3G 3B), 512 colours
-        # Same 3-bit scale as Atari ST / Mega Drive
-        msx2_full = atari_st_512  # identical scale
-        msx2_sample = atari_st_full  # same 64 samples
+        # MSX2 V9938 — 9-bit (3R 3G 3B), 512 colours
+        # Same colour space as Atari ST, Mega Drive, PC Engine — all 9-bit RGB
+        msx2_full = atari_st_512
 
-        # PC Engine / TurboGrafx-16 — 9-bit (3R 3G 3B), 512 colours
-        # Scale: 0,36,73,109,146,182,219,255 (same as MD)
-        pc_engine_full = sega_md
-        pc_engine_sample = sega_md_sample
+        # PC Engine HuC6260 — 9-bit (3R 3G 3B), 512 colours
+        # Same colour space as MSX2/Atari ST/Mega Drive — identical 9-bit RGB encoding
+        # Difference is on-screen layout: 16 sprite palettes + 16 BG palettes of 16col each
+        pc_engine_full = atari_st_512
 
         # Sinclair QL — 8 colours
         sinclair_ql = [
@@ -2845,6 +2823,26 @@ class ColorPalPresetsMixin:
         # TV RF output: paper=white, ink=black, inverse video swaps them
         zx80 = ["#FFFFFF","#000000"]
         zx81 = ["#FFFFFF","#000000"]  # identical — same display hardware
+
+        # ZX Spectrum Next — 9-bit palette (3R 3G 3B), 512 colours, 256 active
+        # Layer 2: 320×256 or 640×256 at up to 256 colours
+        # Same 9-bit colour space as Atari ST, MSX2, Mega Drive
+        specnext_9bit = atari_st_512  # same 9-bit scale
+
+        # Timex Sinclair 2068 / TC2048 — adds HiRes 512×192 B&W and column-colour mode
+        # Standard mode: same 16 colours as ZX Spectrum
+        # Column colour mode: 8 colours per 8-pixel column (not 8×8 cell)
+        # HiRes mode: 512×192 monochrome — reuse zx80 2-colour palette
+        timex_colour = zx_spectrum   # same 16 ULA colours
+        timex_hires  = zx80          # B&W only in 512×192 mode
+
+        # Pentagon / Soviet Spectrum clones
+        # Pentagon 128/512/1024, Scorpion ZS, Kay, Profi — all identical ULA display
+        # Same 16-colour palette as ZX Spectrum — no display differences
+        pentagon = zx_spectrum
+
+        # Jupiter Ace — B&W character mode only (Forth machine)
+        jupiter_ace = ["#000000","#FFFFFF"]
 
         # BBC Micro / Acorn — 8 colours (SAA5050 / 6845 ULA)
         bbc_micro = [
@@ -2937,29 +2935,60 @@ class ColorPalPresetsMixin:
             "#808000","#80804C","#808066","#808080",
         ]
 
-        # MSX2 — V9938, 512 colour palette (9-bit), default 16
-        msx2 = [
-            "#000000","#010101","#3EB849","#74D07D",
-            "#5955E0","#8076F1","#B95E51","#65DBEF",
-            "#DB6559","#FF897D","#CCC35E","#DED087",
-            "#3AA241","#B766B5","#CCCCCC","#FFFFFF",
-            # Extra colours available in V9938 256-colour mode
-            "#000000","#330000","#660000","#990000",
-            "#CC0000","#FF0000","#003300","#333300",
-            "#663300","#993300","#CC3300","#FF3300",
-            "#006600","#336600","#666600","#996600",
-        ]
-
-        # PC Engine / TurboGrafx-16 — 512 colours (9-bit), 16 palettes of 16
-        pc_engine = [
-            "#000000","#1C1C1C","#393939","#555555","#717171","#8E8E8E","#AAAAAA","#C6C6C6",
-            "#E2E2E2","#FFFFFF","#00001C","#001C1C","#001C00","#1C1C00","#1C0000","#1C001C",
-            "#FF0000","#FF3939","#FF7171","#FFAAAA","#00FF00","#39FF39","#71FF71","#AAFFAA",
-            "#0000FF","#3939FF","#7171FF","#AAAAFF","#FFFF00","#FF00FF","#00FFFF","#FF7100",
-        ]
+        # MSX2 and PC Engine use msx2_full / pc_engine_full (full 9-bit 512-colour palettes)
 
         # Commodore 128 (same C64 colours but noting different VDC chip for 80-col)
         # VDC 80-col mode has 16 colours same as C64 for compatibility
+
+        # Atari Lynx — 16 colours from 4096 (12-bit), default palette
+        atari_lynx = [
+            "#000000","#FFFFFF","#FF0000","#00FF00",
+            "#0000FF","#FFFF00","#FF00FF","#00FFFF",
+            "#FF8800","#0088FF","#88FF00","#FF0088",
+            "#8800FF","#00FF88","#888888","#444444",
+        ]
+
+        # Atari Jaguar — 24-bit true colour, show 16 representative
+        atari_jaguar = [
+            "#000000","#FFFFFF","#FF0000","#00FF00",
+            "#0000FF","#FFFF00","#FF00FF","#00FFFF",
+            "#FF8800","#8800FF","#00FF88","#FF0088",
+            "#888888","#444444","#CCCCCC","#FF4444",
+        ]
+
+        # Atari 2600 PAL — different hues from NTSC
+        atari_2600_pal = [
+            "#000000","#404040","#6c6c6c","#909090","#b0b0b0","#c8c8c8","#dcdcdc","#ececec",
+            "#1a1a00","#3a3a00","#5c5c00","#7a7a10","#989820","#b0b030","#c8c844","#dcdce0",
+            "#001800","#003000","#004800","#106010","#207820","#389038","#50a850","#68c068",
+            "#000018","#000038","#100058","#280070","#440088","#5c00a0","#7400b8","#8c00d0",
+            "#180000","#380000","#580000","#780000","#980010","#b82020","#d84040","#f06060",
+            "#000014","#000034","#000054","#100074","#300094","#5000b4","#7020d4","#9040f4",
+            "#181800","#383800","#585800","#787820","#989840","#b8b860","#d8d880","#f8f8a0",
+            "#001414","#003434","#005454","#107474","#209494","#38b4b4","#50d4d4","#68f4f4",
+        ]
+
+        # Amstrad PCW — 2 colours (green phosphor)
+        amstrad_pcw = ["#1a3300","#33ff00"]  # dark bg, bright green
+
+        # Amstrad CPC+ / GX4000 — 4096 colours (12-bit, same as STe)
+        # Same palette space as atari_ste
+        amstrad_cpc_plus = atari_ste  # identical 12-bit colour space
+
+        # Amstrad NC100/NC200 — 4 shades (grey LCD)
+        amstrad_nc = ["#000000","#555555","#AAAAAA","#FFFFFF"]
+
+        # RM Nimbus (Research Machines) — 16 colours (PC-compatible EGA-like)
+        # Nimbus had its own unusual colour palette in low-res mode
+        rm_nimbus = [
+            "#000000","#0000AA","#00AA00","#00AAAA",
+            "#AA0000","#AA00AA","#AA5500","#AAAAAA",
+            "#555555","#5555FF","#55FF55","#55FFFF",
+            "#FF5555","#FF55FF","#FFFF55","#FFFFFF",
+        ]
+
+        # Atari 5200 / 7800 — same GTIA chip as Atari 800
+        # (reuse atari_800 palette)
 
         # Registry: name -> (hex_list, cols)
         self.retro_palettes = {
@@ -2974,18 +3003,32 @@ class ColorPalPresetsMixin:
             "Plus/4":             (plus4,                8),  # 16col TED
             # ── Sinclair / ZX ────────────────────────────────────────────
             "ZX Spectrum":        (zx_spectrum,          8),  # 16col ULA
+            "ZX Spectrum 128K":   (zx_spectrum,          8),  # same display
             "ZX80":               (zx80,                 2),  # B&W
             "ZX81":               (zx81,                 2),  # B&W
             "ULA Plus":           (ula_plus,            16),  # 256col
+            "ZX Spectrum Next":   (specnext_9bit,       16),  # 512col 9-bit
+            "Timex TS2068":       (timex_colour,         8),  # 16col standard mode
+            "Timex HiRes":        (timex_hires,          2),  # B&W 512×192 mode
+            "Pentagon":           (pentagon,             8),  # 16col — same as Spectrum
+            "Jupiter Ace":        (jupiter_ace,          2),  # B&W char mode
             "Sinclair QL":        (sinclair_ql,          8),  # 8col
             # ── Atari ────────────────────────────────────────────────────
             "Atari 2600 NTSC":    (atari_2600,           8),  # 128col TIA
-            "Atari 800 GTIA":     (atari_800,           16),  # 256col GTIA
-            "Atari ST":           (atari_st_512,         16),  # 512col full (9-bit)
-            "Atari STe":          (atari_ste,            16),  # 4096col full (12-bit)
-            "Atari Falcon":       (atari_falcon,         8),  # 64 of 65536 (16-bit)
+            "Atari 2600 PAL":     (atari_2600_pal,        8),  # 128col PAL
+            "Atari 800 GTIA":     (atari_800,            16),  # 256col GTIA
+            "Atari 5200":         (atari_800,            16),  # same GTIA chip
+            "Atari 7800":         (atari_800,            16),  # same GTIA chip
+            "Atari Lynx":         (atari_lynx,            8),  # 16col 12-bit
+            "Atari ST":           (atari_st_512,         16),  # 512col (9-bit)
+            "Atari STe":          (atari_ste,            16),  # 4096col (12-bit)
+            "Atari Falcon":       (atari_falcon,          8),  # 64 of 65536 (16-bit)
+            "Atari Jaguar":       (atari_jaguar,          8),  # 24-bit sample
             # ── Amstrad ──────────────────────────────────────────────────
-            "Amstrad CPC":        (amstrad_cpc,          9),  # 27col hardware
+            "Amstrad CPC":        (amstrad_cpc,           9),  # 27col hardware
+            "Amstrad CPC+":       (amstrad_cpc_plus,     16),  # 4096col 12-bit
+            "Amstrad PCW":        (amstrad_pcw,           2),  # 2col green phosphor
+            "Amstrad NC100/200":  (amstrad_nc,            4),  # 4 shades grey
             # ── Acorn ────────────────────────────────────────────────────
             "BBC Micro":          (bbc_micro,            8),  # 8col 6845 ULA
             "Acorn Electron":     (acorn_electron,       8),  # 8col
@@ -2999,12 +3042,12 @@ class ColorPalPresetsMixin:
             "MSX2":               (msx2_full,            16),  # 512col full V9938
             # ── NES / Nintendo ───────────────────────────────────────────
             "NES":                (nes,                  8),  # 64col PPU
-            "SNES":               (snes,                 8),  # 64 of 32768
+            "SNES":               (snes,               128),  # 32768col full (15-bit)
             # ── Game Boy ─────────────────────────────────────────────────
             "Game Boy":           (game_boy,             4),  # 4 shades green
             "Game Boy Pocket":    (game_boy_pocket,      4),  # 4 shades grey
-            "Game Boy Color":     (game_boy_color,       8),  # 64 of 32768
-            "Game Boy Advance":   (game_boy_advance,     8),  # 64 of 32768
+            "Game Boy Color":     (game_boy_color,     128),  # 32768col full (15-bit)
+            "Game Boy Advance":   (game_boy_advance,   128),  # 32768col full (15-bit)
             # ── Sega ─────────────────────────────────────────────────────
             "Sega SG-1000":       (sega_sg1000,          8),  # 16col TMS9918
             "Sega Master System": (sega_ms,              8),  # 64col 6-bit
@@ -3017,6 +3060,8 @@ class ColorPalPresetsMixin:
             # ── Apple ────────────────────────────────────────────────────
             "Apple II Lo-Res":    (apple2_lores,         8),  # 16col
             "Apple II Hi-Res":    (apple2_hires,         6),  # 6 artefact col
+            # ── RM Nimbus ─────────────────────────────────────────────────
+            "RM Nimbus":          (rm_nimbus,             8),  # 16col EGA-like
         }
         self.current_retro_palette = "Amiga OCS"
 
@@ -3120,7 +3165,6 @@ class ColorPalPresetsMixin:
         """Show user palette picker as hierarchical platform submenus."""
         menu = QMenu(self)
 
-        # Structure: {submenu_label: [palette_name, ...]}
         GROUPS = [
             ("Amiga", [
                 "Amiga OCS", "Amiga ECS", "Amiga AGA", "Amiga AGA WB",
@@ -3129,14 +3173,22 @@ class ColorPalPresetsMixin:
                 "C64", "VIC-20", "Plus/4",
             ]),
             ("Sinclair / ZX", [
-                "ZX Spectrum", "ZX80", "ZX81", "ULA Plus", "Sinclair QL",
+                "ZX Spectrum", "ZX Spectrum 128K",
+                "ZX80", "ZX81", "ULA Plus",
+                "ZX Spectrum Next",
+                "Timex TS2068", "Timex HiRes",
+                "Pentagon", "Jupiter Ace",
+                "Sinclair QL",
             ]),
             ("Atari", [
-                "Atari 2600 NTSC", "Atari 800 GTIA",
+                "Atari 2600 NTSC", "Atari 2600 PAL",
+                "Atari 800 GTIA", "Atari 5200", "Atari 7800",
                 "Atari ST", "Atari STe", "Atari Falcon",
+                "Atari Lynx", "Atari Jaguar",
             ]),
             ("Amstrad", [
-                "Amstrad CPC",
+                "Amstrad CPC", "Amstrad CPC+",
+                "Amstrad PCW", "Amstrad NC100/200",
             ]),
             ("Acorn", [
                 "BBC Micro", "Acorn Electron", "Acorn Archimedes",
@@ -3160,6 +3212,7 @@ class ColorPalPresetsMixin:
             ]),
             ("Other", [
                 "SAM Coupé", "Apple II Lo-Res", "Apple II Hi-Res",
+                "RM Nimbus",
             ]),
         ]
 
@@ -3419,9 +3472,11 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
                                   SVGIconFactory.new_icon)
         self.tb_new_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tb_new_btn.customContextMenuRequested.connect(self._new_btn_context_menu)
-        self.tb_load_btn   = _tb("Load",   "Load / open image file",
-                                  self._import_bitmap,
-                                  SVGIconFactory.open_icon)
+        self.tb_load_btn = _tb("Load", "Click for load options",
+                                self._show_load_menu,
+                                SVGIconFactory.open_icon)
+        self.tb_load_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tb_load_btn.customContextMenuRequested.connect(self._show_load_menu_at)
         self.tb_save_btn   = _tb("Save",   "Save canvas as PNG",
                                   self._export_bitmap,
                                   SVGIconFactory.save_icon)
@@ -3605,6 +3660,13 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         self._status_bar.setSizeGripEnabled(False)
         self._status_bar.setFixedHeight(22)
         self._status_bar.setVisible(self.dp5_settings.get('show_statusbar'))
+        # Permanent right-side info labels
+        self._status_size_lbl  = QLabel("320×256")
+        self._status_depth_lbl = QLabel("RGBA32")
+        self._status_size_lbl.setStyleSheet("padding: 0 6px; color: #aaa;")
+        self._status_depth_lbl.setStyleSheet("padding: 0 6px; color: #aaa;")
+        self._status_bar.addPermanentWidget(self._status_depth_lbl)
+        self._status_bar.addPermanentWidget(self._status_size_lbl)
         layout.addWidget(self._status_bar)
 
         return panel
@@ -3614,9 +3676,11 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         fm = mb.addMenu("File")
         fm.addAction("New canvas…",    self._new_canvas)
         fm.addSeparator()
-        fm.addAction("Open image…",    self._import_bitmap)
-        fm.addAction("Open + snap to palette…",          self._import_bitmap_snap_user_pal)
-        fm.addAction("Open + snap to palette (dithered)…", self._import_bitmap_snap_dither)
+        fm.addAction("Open image…",                           self._import_bitmap)
+        fm.addAction("Snap to pal…",                          self._import_bitmap_snap_user_pal)
+        fm.addAction("Snap to pal (dither)…",                 self._import_bitmap_snap_dither)
+        fm.addAction("Snap to pal, canvas size…",             self._import_bitmap_snap_canvas_size)
+        fm.addAction("Snap to pal, canvas size (dither)…",    self._import_bitmap_snap_canvas_size_dither)
         # Import submenu — all supported formats
         fim = fm.addMenu("Import")
         fim.addAction("PNG / BMP / JPEG / WebP…",  self._import_bitmap)
@@ -3790,27 +3854,65 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
         # Platform menu
         plm = mb.addMenu("Platform")
-        plm.addAction("None (free)",              lambda: self._set_platform('none'))
+        plm.addAction("None (free)", lambda: self._set_platform('none'))
         plm.addSeparator()
-        plm.addAction("Amiga LowRes  (OCS 32col)",  lambda: self._set_platform('amiga'))
-        plm.addAction("Amiga AGA     (256col)",      lambda: self._set_platform('amiga_aga'))
-        plm.addAction("Amiga HAM6    (4096col)",     lambda: self._set_platform('amiga_ham'))
-        plm.addAction("Amiga HAM8    (16M col)",     lambda: self._set_platform('amiga_ham8'))
-        plm.addAction("Amiga RTG WB  (AGA WB pal)", lambda: self._set_platform('amiga_rtg'))
-        plm.addAction("C64 Hires     (8×8 cell)", lambda: self._set_platform('c64'))
-        plm.addAction("C64 Multicolor(4×8 cell)", lambda: self._set_platform('c64m'))
-        plm.addAction("ZX Spectrum   (8×8 cell)", lambda: self._set_platform('spectrum'))
-        plm.addAction("ZX80          (B&W char cells)", lambda: self._set_platform('zx80'))
-        plm.addAction("ZX81 WRX      (B&W Bayer dither)",lambda: self._set_platform('zx81'))
-        plm.addAction("ZX Next 256   (free)",     lambda: self._set_platform('specnext'))
-        plm.addAction("ZX Next 320   (free)",     lambda: self._set_platform('specnext'))
-        plm.addAction("MSX1          (8×8 cell)", lambda: self._set_platform('msx'))
-        plm.addAction("Amstrad CPC0  (4×8 cell)", lambda: self._set_platform('cpc'))
-        plm.addAction("Amstrad CPC1  (8×8 cell)", lambda: self._set_platform('cpc1'))
-        plm.addAction("Atari ST      (16×1 scanline)", lambda: self._set_platform('atari_st'))
-        plm.addAction("Atari 800     (256col GTIA)",   lambda: self._set_platform('atari_800'))
-        plm.addAction("Plus/4        (8×8 cell)", lambda: self._set_platform('plus4'))
-        plm.addAction("VIC-20        (8×8 cell)", lambda: self._set_platform('vic20'))
+
+        def _pm(label, items):
+            sub = plm.addMenu(label)
+            for name, mode in items:
+                sub.addAction(name, lambda m=mode: self._set_platform(m))
+
+        _pm("Amiga", [
+            ("OCS LowRes  320×256  32col",   'amiga'),
+            ("ECS          320×256  64col",   'amiga_ecs'),
+            ("AGA          320×256  256col",  'amiga_aga'),
+            ("HAM6         320×256  4096col", 'amiga_ham'),
+            ("HAM8         320×256  16Mcol",  'amiga_ham8'),
+            ("RTG WB       640×480",          'amiga_rtg'),
+        ])
+        _pm("Commodore", [
+            ("C64 Hires    320×200  2col/cell", 'c64'),
+            ("C64 Multicolor 160×200 4col",     'c64m'),
+            ("VIC-20       176×184",             'vic20'),
+            ("Plus/4       320×200",             'plus4'),
+        ])
+        _pm("Sinclair / ZX", [
+            ("Spectrum 48K   256×192  2col/cell", 'spectrum'),
+            ("Spectrum 128K  256×192  same disp", 'spectrum128'),
+            ("ZX80           256×192  B&W hard",  'zx80'),
+            ("ZX81 WRX       256×192  B&W dither",'zx81'),
+            ("ZX Next L2     320×256  256col",    'specnext'),
+            ("ZX Next ULA    256×192  classic",   'specnext_ul'),
+            ("Timex TS2068   256×192  standard",  'timex'),
+            ("Timex HiRes    512×192  B&W",       'timex_hi'),
+            ("Pentagon       256×192  like Spec", 'pentagon'),
+            ("Jupiter Ace    256×192  B&W Forth", 'jupiter'),
+        ])
+        _pm("Atari", [
+            ("2600 NTSC    160×96",              'atari_2600'),
+            ("800/XL/XE    320×192  GTIA 256col",'atari_800'),
+            ("5200         320×192  GTIA",       'atari_5200'),
+            ("7800         320×200  GTIA",       'atari_7800'),
+            ("ST           320×200  16col",      'atari_st'),
+            ("STe          320×200  16col 12bit",'atari_ste'),
+            ("Lynx         160×102  16col",      'atari_lynx'),
+            ("Falcon       320×200  16bit",      'atari_falcon'),
+            ("Jaguar       320×240  24bit",      'atari_jaguar'),
+        ])
+        _pm("Amstrad", [
+            ("CPC Mode 0   160×200  4col",  'cpc'),
+            ("CPC Mode 1   320×200  2col",  'cpc1'),
+            ("CPC+/GX4000  320×200  4096col",'cpc_plus'),
+            ("PCW           720×256  2col", 'pcw'),
+            ("NC100/200    480×128  4col",  'nc'),
+        ])
+        _pm("MSX", [
+            ("MSX1         256×192  16col", 'msx'),
+            ("MSX2         256×212  512col",'msx2'),
+        ])
+        _pm("Other", [
+            ("RM Nimbus    320×250  16col", 'nimbus'),
+        ])
         plm.addSeparator()
         plm.addAction("Enforce colour constraints (toggle)", self._toggle_colour_constraints)
 
@@ -4116,7 +4218,7 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         user_cols = self.dp5_settings.get('user_pal_cols')
         user_rows = self.dp5_settings.get('user_pal_rows')
         user_pal_w = user_cols * 12
-        user_pal_max_h = user_rows * 12 + 2
+        user_pal_max_h = max(user_rows * 12 + 2, 130)  # minimum 130px for large palettes
         self._user_pal_grid = PaletteGrid(cols=user_cols, cell=12)
         self._user_pal_grid.color_picked.connect(self._on_user_palette_color)
         self._user_pal_grid.setFixedWidth(user_pal_w)
@@ -4334,7 +4436,7 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self.dp5_canvas.color = c
         self._fgbg_swatch.set_fg(c)
 
-    def _apply_bit_depth(self): #vers 2
+    def _apply_bit_depth(self): #vers 3
         """Quantize canvas RGBA to selected bit depth and update palette grid."""
         if not self.dp5_canvas: return
         depth = self._bit_depth_combo.currentText()
@@ -4343,29 +4445,28 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             w, h = self.dp5_canvas.tex_w, self.dp5_canvas.tex_h
             img = Image.frombytes('RGBA', (w, h), bytes(self.dp5_canvas.rgba))
 
-            if depth == "32b":
-                out_img = img  # no change to canvas
-            elif depth == "24b":
-                out_img = img.convert('RGB').convert('RGBA')
-            elif depth == "16b":
+            if depth == "32bit":
+                out_img = img                              # no change
+            elif depth == "24bit":
+                out_img = img.convert('RGB').convert('RGBA')  # drop alpha
+            elif depth == "16bit":
                 rgb = img.convert('RGB')
                 pixels = rgb.tobytes()
                 buf = bytearray(len(pixels))
                 for i in range(0, len(pixels), 3):
-                    buf[i]   = (pixels[i]   >> 3) << 3
-                    buf[i+1] = (pixels[i+1] >> 2) << 2
-                    buf[i+2] = (pixels[i+2] >> 3) << 3
+                    buf[i]   = (pixels[i]   >> 3) << 3    # 5-bit R
+                    buf[i+1] = (pixels[i+1] >> 2) << 2    # 6-bit G
+                    buf[i+2] = (pixels[i+2] >> 3) << 3    # 5-bit B
                 out_img = Image.frombytes('RGB', (w, h), bytes(buf)).convert('RGBA')
-            elif depth == "8b":
-                rgb = img.convert('RGB')
-                q = rgb.quantize(colors=256)
+            elif depth == "8bit":
+                q = img.convert('RGB').quantize(colors=256)
                 out_img = q.convert('RGB').convert('RGBA')
+            else:
+                return
 
-            # Write back to canvas
             self.dp5_canvas.rgba = bytearray(out_img.tobytes())
             self.dp5_canvas.update()
 
-            # Update palette grid
             p_img = out_img.convert('RGB').quantize(colors=256)
             pal_flat = p_img.getpalette()
             palette = [(pal_flat[i*3], pal_flat[i*3+1], pal_flat[i*3+2]) for i in range(256)]
@@ -4445,29 +4546,48 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
 
     # Platform cell sizes: (cell_w, cell_h, max_colours_per_cell)
     _PLATFORM_CELLS = {
-        'none':      (1,  1,   256),
-        'amiga':     (8,  1,   32),     # OCS: 32 colours, no per-cell limit
-        'amiga_aga': (8,  1,   256),    # AGA: 256 colours
-        'amiga_ham': (1,  1,   4096),   # HAM6: hold-and-modify, 4096 colours
-        'amiga_ham8':(1,  1,   16777216), # HAM8: hold-and-modify, 16M colours
-        'amiga_rtg': (1,  1,   256),    # RTG chunky: AGA WB palette, no constraint
-        'c64':       (8,  8,   2),
-        'c64m':      (4,  8,   4),
-        'spectrum':  (8,  8,   2),
-        'zx80':      (8,  8,   2),   # ZX80 — B&W only, 8×8 char cells, 32×24 chars
-        'zx81':      (8,  8,   2),   # ZX81 — B&W only, 32×24 chars (WRX: 256×192)
-        'specnext':  (1,  1,   256),
-        'msx':       (8,  8,   2),
-        'cpc':       (4,  8,   4),      # CPC Mode 0: 4 colours per 4×8
-        'cpc1':      (8,  8,   2),      # CPC Mode 1: 2 colours per 8×8
-        'atari_st':  (16, 1,   16),
-        'atari_800': (2,  1,   4),     # Atari 8-bit: 2 colours per 2-pixel cell (GTIA)
-        'plus4':     (8,  8,   2),
-        'vic20':     (8,  8,   2),
+        'none':        (1,  1,   256),
+        'amiga':       (8,  1,   32),
+        'amiga_ecs':   (8,  1,   64),
+        'amiga_aga':   (8,  1,   256),
+        'amiga_ham':   (1,  1,   4096),
+        'amiga_ham8':  (1,  1,   16777216),
+        'amiga_rtg':   (1,  1,   256),
+        'c64':         (8,  8,   2),
+        'c64m':        (4,  8,   4),
+        'spectrum':    (8,  8,   2),
+        'spectrum128': (8,  8,   2),   # same display as 48K
+        'zx80':        (8,  8,   2),
+        'zx81':        (8,  8,   2),
+        'specnext':    (1,  1,   256), # Layer 2 free pixel mode
+        'specnext_ul': (8,  8,   2),   # Next classic ULA mode
+        'timex':       (8,  8,   2),   # TS2068 standard mode
+        'timex_hi':    (1,  1,   2),   # TS2068 HiRes 512×192 B&W
+        'pentagon':    (8,  8,   2),   # same as Spectrum
+        'jupiter':     (8,  8,   2),   # Jupiter Ace B&W
+        'msx':         (8,  8,   2),
+        'msx2':        (8,  8,   16),
+        'cpc':         (4,  8,   4),
+        'cpc1':        (8,  8,   2),
+        'cpc_plus':    (8,  8,   16),
+        'pcw':         (8,  8,   2),
+        'nc':          (8,  8,   4),
+        'atari_2600':  (2,  1,   4),
+        'atari_st':    (16, 1,   16),
+        'atari_ste':   (16, 1,   16),
+        'atari_800':   (2,  1,   4),
+        'atari_5200':  (2,  1,   4),
+        'atari_7800':  (2,  1,   4),
+        'atari_lynx':  (1,  1,   16),
+        'atari_falcon':(1,  1,   65536),
+        'atari_jaguar':(1,  1,   16777216),
+        'plus4':       (8,  8,   2),
+        'vic20':       (8,  8,   2),
+        'nimbus':      (4,  4,   16),
     }
 
-    def _set_platform(self, mode: str): #vers 2
-        """Set platform mode — cell grid, auto-load palette, fit zoom."""
+    def _set_platform(self, mode: str): #vers 4
+        """Set platform mode — cell grid, auto-load palette, resize canvas, fit zoom."""
         self._platform_mode = mode
         cw, ch, _ = self._PLATFORM_CELLS.get(mode, (1,1,256))
         if self.dp5_canvas:
@@ -4477,25 +4597,80 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
                 self.dp5_canvas.show_cell_grid = True
             self.dp5_canvas.update()
         self.dp5_settings.set('platform_mode', mode)
+
         _pal_map = {
             'c64': 'C64', 'c64m': 'C64',
-            'spectrum': 'ZX Spectrum', 'specnext': 'ULA Plus',
+            'spectrum': 'ZX Spectrum', 'spectrum128': 'ZX Spectrum 128K',
+            'specnext': 'ZX Spectrum Next', 'specnext_ul': 'ZX Spectrum',
             'zx80': 'ZX80', 'zx81': 'ZX81',
-            'msx': 'MSX1', 'cpc': 'Amstrad CPC', 'cpc1': 'Amstrad CPC',
-            'atari_st': 'Atari ST',
-            'atari_800': 'Atari 800',
-            'amiga': 'Amiga OCS',
+            'timex': 'Timex TS2068', 'timex_hi': 'Timex HiRes',
+            'pentagon': 'Pentagon', 'jupiter': 'Jupiter Ace',
+            'msx': 'MSX1', 'msx2': 'MSX2',
+            'cpc': 'Amstrad CPC', 'cpc1': 'Amstrad CPC',
+            'cpc_plus': 'Amstrad CPC+',
+            'pcw':  'Amstrad PCW',
+            'nc':   'Amstrad NC100/200',
+            'atari_2600': 'Atari 2600 NTSC',
+            'atari_st': 'Atari ST', 'atari_ste': 'Atari STe',
+            'atari_800': 'Atari 800 GTIA',
+            'atari_5200': 'Atari 5200',
+            'atari_7800': 'Atari 7800',
+            'atari_lynx': 'Atari Lynx',
+            'atari_falcon': 'Atari Falcon',
+            'atari_jaguar': 'Atari Jaguar',
+            'amiga': 'Amiga OCS', 'amiga_ecs': 'Amiga ECS',
             'amiga_aga': 'Amiga AGA',
-            'amiga_ham': 'Amiga OCS',   # HAM6 uses 16 base colours from OCS
-            'amiga_ham8': 'Amiga AGA',  # HAM8 uses 256 base colours from AGA
+            'amiga_ham': 'Amiga OCS',
+            'amiga_ham8': 'Amiga AGA',
             'amiga_rtg': 'Amiga AGA WB',
             'plus4': 'Plus/4', 'vic20': 'VIC-20',
+            'nimbus': 'RM Nimbus',
         }
         if mode in _pal_map:
             self._apply_retro_palette(_pal_map[mode])
+
+        # Resize canvas to platform native resolution
+        _plat_res = {
+            'c64':         (320, 200), 'c64m':        (160, 200),
+            'spectrum':    (256, 192), 'spectrum128': (256, 192),
+            'zx80':        (256, 192), 'zx81':        (256, 192),
+            'specnext':    (320, 256), 'specnext_ul': (256, 192),
+            'timex':       (256, 192), 'timex_hi':    (512, 192),
+            'pentagon':    (256, 192), 'jupiter':     (256,  192),
+            'msx':         (256, 192), 'msx2':        (256, 212),
+            'cpc':         (160, 200), 'cpc1':        (320, 200),
+            'cpc_plus':    (320, 200), 'pcw':         (720, 256),
+            'nc':          (480, 128),
+            'atari_2600':  (160,  96), 'atari_st':    (320, 200),
+            'atari_ste':   (320, 200), 'atari_800':   (320, 192),
+            'atari_5200':  (320, 192), 'atari_7800':  (320, 200),
+            'atari_lynx':  (160, 102), 'atari_falcon': (320, 200),
+            'atari_jaguar': (320, 240),
+            'amiga':       (320, 256), 'amiga_ecs':   (320, 256),
+            'amiga_aga':   (320, 256), 'amiga_ham':   (320, 256),
+            'amiga_ham8':  (320, 256), 'amiga_rtg':   (640, 480),
+            'plus4':       (320, 200), 'vic20':       (176, 184),
+            'nimbus':      (320, 250),
+        }
+        if mode in _plat_res and self.dp5_canvas:
+            pw, ph = _plat_res[mode]
+            if (pw, ph) != (self._canvas_width, self._canvas_height):
+                from PIL import Image
+                img = Image.frombytes('RGBA',
+                    (self._canvas_width, self._canvas_height),
+                    bytes(self.dp5_canvas.rgba))
+                img = img.resize((pw, ph), Image.LANCZOS)
+                self._canvas_width  = pw
+                self._canvas_height = ph
+                self.dp5_canvas.tex_w = pw
+                self.dp5_canvas.tex_h = ph
+                self.dp5_canvas.rgba  = bytearray(img.tobytes())
+                self.dp5_canvas.update()
+
         if self.dp5_canvas and mode != 'none':
             self._fit_canvas_to_viewport()
-        self._set_status(f"Platform: {mode.upper()}  cell {cw}×{ch}")
+        self._set_status(
+            f"Platform: {mode.upper()}  {self._canvas_width}×{self._canvas_height}  cell {cw}×{ch}")
 
     def _set_canvas_mode(self, mode: str, confirm: bool = True, apply: bool = True): #vers 2
         """Switch canvas mode — platform/texture/icon/free."""
@@ -4950,10 +5125,10 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         h = self.dp5_canvas.tex_h
         mode = self._platform_mode
 
-        if mode == 'spectrum':
+        if mode in ('spectrum', 'spectrum128', 'timex', 'pentagon'):
             self._apply_spectrum_clash(cx, cy, cw, ch, w, h)
-        elif mode == 'zx80':
-            # ZX80: hard B&W per 8×8 character cell — no sub-pixel, just average brightness
+        elif mode in ('zx80', 'jupiter'):
+            # Hard B&W — ZX80/Jupiter Ace character cell mode
             for dy in range(ch):
                 for dx in range(cw):
                     tx, ty = cx+dx, cy+dy
@@ -4964,8 +5139,8 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
                     v = 255 if lum >= 128 else 0
                     self.dp5_canvas.rgba[i:i+3] = [v, v, v]
             self.dp5_canvas.update()
-        elif mode == 'zx81':
-            # ZX81 WRX mode: Bayer ordered dither — simulates grey via pixel patterns
+        elif mode in ('zx81', 'timex_hi'):
+            # Bayer dither — ZX81 WRX / Timex HiRes B&W modes
             self._apply_zx8x_dither(cx, cy, cw, ch, w, h)
         elif mode in ('c64', 'c64m'):
             self._snap_cell_to_palette(cx, cy, cw, ch, w, h, self._C64_PALETTE)
@@ -5466,8 +5641,10 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             'c64':       self._C64_PALETTE,
             'c64m':      self._C64_PALETTE,
             'spectrum': self._ZX_PALETTE,
-            'zx80':     'threshold_bw', # Hard threshold — character cell mode
-            'zx81':     'bayer_bw',     # Bayer dither — WRX hi-res mode
+            'zx80':        'threshold_bw',
+            'zx81':        'bayer_bw',
+            'timex_hi':    'threshold_bw',  # HiRes mode is B&W
+            'jupiter':     'threshold_bw',  # Jupiter Ace is B&W
             'specnext':  None,   # 256 colour — no snap needed
             'msx':       self._MSX_PALETTE,
             'cpc':       self._CPC_PALETTE,
@@ -6157,19 +6334,38 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             ("C64 Hires      320×200",   320, 200,  3),
             ("C64 Multicolor 160×200",   160, 200,  3),
             ("── ZX Spectrum ──",          0,   0,  0),
-            ("Spectrum       256×192",   256, 192,  3),
-            ("Spectrum Next  320×256",   320, 256,  3),
-            ("ZX80           256×192",   256, 192,  3),   # nominal — 32×24 chars
-            ("ZX81           256×192",   256, 192,  3),   # WRX hires mode
+            ("Spectrum 48K   256×192",   256, 192,  3),
+            ("Spectrum 128K  256×192",   256, 192,  3),
+            ("ZX80           256×192",   256, 192,  3),
+            ("ZX81           256×192",   256, 192,  3),
+            ("ZX Next L2     320×256",   320, 256,  3),
+            ("ZX Next L2 640 640×256",   640, 256,  3),
+            ("ZX Next ULA    256×192",   256, 192,  3),
+            ("Timex TS2068   256×192",   256, 192,  3),
+            ("Timex HiRes    512×192",   512, 192,  3),
+            ("Pentagon       256×192",   256, 192,  3),
+            ("Jupiter Ace    256×192",   256, 192,  3),
             ("── MSX ──",                  0,   0,  0),
             ("MSX1           256×192",   256, 192,  3),
+            ("MSX2           256×212",   256, 212,  3),
             ("── Amstrad CPC ──",           0,   0,  0),
             ("CPC Mode 0     160×200",   160, 200,  3),
             ("CPC Mode 1     320×200",   320, 200,  3),
             ("CPC Mode 2     640×200",   640, 200,  3),
-            ("── Atari ST ──",             0,   0,  0),
+            ("CPC+/GX4000    320×200",   320, 200,  3),
+            ("PCW            720×256",   720, 256,  3),
+            ("NC100/200      480×128",   480, 128,  3),
+            ("── Atari ──",                0,   0,  0),
+            ("Atari 2600     160×96",    160,  96,  3),
+            ("Atari 800/XL   320×192",   320, 192,  3),
+            ("Atari 5200     320×192",   320, 192,  3),
+            ("Atari 7800     320×200",   320, 200,  3),
             ("Atari ST Low   320×200",   320, 200,  3),
             ("Atari ST Med   640×200",   640, 200,  3),
+            ("Atari STe Low  320×200",   320, 200,  3),
+            ("Atari Lynx     160×102",   160, 102,  3),
+            ("Atari Falcon   320×200",   320, 200,  3),
+            ("Atari Jaguar   320×240",   320, 240,  3),
             ("── Plus/4 ──",               0,   0,  0),
             ("Plus/4 Hires   320×200",   320, 200,  3),
             ("Plus/4 Multi   160×200",   160, 200,  3),
@@ -6177,6 +6373,8 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             ("VIC-20         176×184",   176, 184,  3),
             ("── Sinclair QL ──",           0,   0,  0),
             ("QL Low         256×256",   256, 256,  3),
+            ("── RM Nimbus ──",             0,   0,  0),
+            ("Nimbus LowRes  320×250",   320, 250,  3),
         ]
         plat_tab, plat_w, plat_h, plat_d, plat_f, plat_pc = make_preset_tab(
             PLATFORM_PRESETS, 320, 200, 3)
@@ -6405,6 +6603,87 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             "Images (*.png *.bmp *.jpg *.jpeg *.iff *.lbm *.iff);;All Files (*)")
         if not path or not self.dp5_canvas: return
         self._import_bitmap_path(path)
+
+    def _show_load_menu(self): #vers 1
+        """Show load options menu from Load button left-click."""
+        btn = getattr(self, 'tb_load_btn', None)
+        menu = self._build_load_menu()
+        if btn:
+            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        else:
+            menu.exec(self.cursor().pos())
+
+    def _show_load_menu_at(self, pos): #vers 1
+        """Show load options menu at right-click position."""
+        btn = self.tb_load_btn
+        self._build_load_menu().exec(btn.mapToGlobal(pos))
+
+    def _build_load_menu(self): #vers 1
+        """Build the 4-option load menu."""
+        menu = QMenu(self)
+        menu.addAction("Open…",                               self._import_bitmap)
+        menu.addAction("Snap to pal…",                        self._import_bitmap_snap_user_pal)
+        menu.addAction("Snap to pal (dither)…",               self._import_bitmap_snap_dither)
+        menu.addAction("Snap to pal, canvas size…",           self._import_bitmap_snap_canvas_size)
+        menu.addAction("Snap to pal, canvas size (dither)…",  self._import_bitmap_snap_canvas_size_dither)
+        return menu
+
+    def _load_btn_context_menu(self, pos): #vers 2
+        """Right-click Load button — delegates to _show_load_menu_at."""
+        self._show_load_menu_at(pos)
+
+    def _import_bitmap_snap_canvas_size(self): #vers 1
+        """Open image, resize to current canvas size, hard-snap to user palette."""
+        palette = self._get_user_palette_rgb()
+        if not palette:
+            QMessageBox.warning(self, "Snap to Palette",
+                                "No user palette loaded. Load a palette first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open + Snap to Pal, Canvas Size", "",
+            "Images (*.png *.bmp *.jpg *.jpeg *.iff *.lbm *.tga *.tiff *.gif *.dds *.psd);;All Files (*)")
+        if not path or not self.dp5_canvas: return
+        from PIL import Image
+        img = Image.open(path).convert('RGBA')
+        img = img.resize((self._canvas_width, self._canvas_height), Image.LANCZOS)
+        self._push_undo()
+        snapped = self._snap_image_to_user_palette(img)
+        self.dp5_canvas.rgba = bytearray(snapped.tobytes())
+        self.dp5_canvas.update()
+        self._set_status(
+            f"Opened + snapped {self._canvas_width}×{self._canvas_height}: {os.path.basename(path)}")
+
+    def _import_bitmap_snap_canvas_size_dither(self): #vers 1
+        """Open image, resize to current canvas size, dithered snap to user palette."""
+        palette = self._get_user_palette_rgb()
+        if not palette:
+            QMessageBox.warning(self, "Snap + Dither",
+                                "No user palette loaded. Load a palette first.")
+            return
+        # Ask dither method
+        method, ok = QInputDialog.getItem(
+            self, "Dither Method", "Choose dither:",
+            ["Floyd-Steinberg", "Bayer 4×4", "Checkerboard"], 0, False)
+        if not ok: return
+        mode_map = {"Floyd-Steinberg":"floyd","Bayer 4×4":"bayer","Checkerboard":"checker"}
+        mode = mode_map[method]
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Open + Snap, Canvas Size ({method})", "",
+            "Images (*.png *.bmp *.jpg *.jpeg *.iff *.lbm *.tga *.tiff *.gif *.dds *.psd);;All Files (*)")
+        if not path or not self.dp5_canvas: return
+        from PIL import Image
+        img = Image.open(path).convert('RGBA')
+        img = img.resize((self._canvas_width, self._canvas_height), Image.LANCZOS)
+        self._push_undo()
+        old_mode = getattr(self, '_pal_dither_mode', 'off')
+        self._pal_dither_mode = mode
+        snapped = self._apply_user_palette_dither(img)
+        self._pal_dither_mode = old_mode
+        self.dp5_canvas.rgba = bytearray(snapped.tobytes())
+        self.dp5_canvas.update()
+        self._set_status(
+            f"Opened + {mode} dither {self._canvas_width}×{self._canvas_height}: {os.path.basename(path)}")
 
     def _import_bitmap_snap_user_pal(self): #vers 3
         """Open image then hard-snap every pixel to nearest user palette colour."""
@@ -7180,7 +7459,7 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Art Studio Import Error", str(e))
 
-    def _load_rgba(self, rgba: bytearray, w: int, h: int, name: str = ""): #vers 1
+    def _load_rgba(self, rgba: bytearray, w: int, h: int, name: str = ""): #vers 2
         """Load raw RGBA data into canvas, update palette, fit zoom."""
         if not self.dp5_canvas: return
         self._canvas_width = w; self._canvas_height = h
@@ -7196,6 +7475,7 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
             self.pal_bar.set_palette_raw([(pf[i*3],pf[i*3+1],pf[i*3+2]) for i in range(256)])
         except Exception:
             pass
+        self._set_status(f"Loaded: {name}  {w}×{h}" if name else f"Canvas: {w}×{h}")
         if name:
             self._bitmap_list.append({'name':name,'rgba':rgba,'w':w,'h':h})
             self._bitmap_lw.addItem(name)
@@ -8966,6 +9246,15 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
     def _set_status(self, msg: str):
         if hasattr(self, '_status_bar'):
             self._status_bar.showMessage(msg)
+        # Always refresh permanent info labels
+        if hasattr(self, '_status_size_lbl'):
+            w = getattr(self, '_canvas_width', 0)
+            h = getattr(self, '_canvas_height', 0)
+            self._status_size_lbl.setText(f"{w}×{h}")
+        if hasattr(self, '_status_depth_lbl'):
+            depth = getattr(self, '_canvas_bit_depth', 0)
+            labels = {0:'RGBA32', 1:'RGB24', 2:'RGB16', 3:'Idx8'}
+            self._status_depth_lbl.setText(labels.get(depth, 'RGBA32'))
 
     def _toggle_maximize(self):
         if self.isMaximized(): self.showNormal()
