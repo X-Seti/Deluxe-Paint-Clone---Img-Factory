@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-# dp5_workshop.py - Version: 2 (Build 292)
+# dp5_workshop.py - Version: 2 (Build 292c)
 # X-Seti - April 2026 - Deluxe Paint 5 Clone - Img Factory 1.6 bitmap editor.
 #
-# Standalone use:   python3 dp5_workshop.py
-# Drop-in use:      copy this folder into apps/components/DP5_Workshop/
-#                   inside an Img Factory 1.6 installation.
+# Merged from:
+#   dp5_workshop.py   (v1 container skeleton)
+#   dp5_functions.py  (DP5Canvas, DP5PaletteBar, DP5PaintEditor logic)
+#   color_pal_presets.py (ColorPalPresetsMixin — retro palette presets)
+#   dp5_workshop_concept.py (dual palette concept)
+#   dp5_paint_clone.py (tool system reference)
 #
-# External deps (optional — graceful fallback if missing):
-#   apps/methods/imgfactory_svg_icons.py  — SVG icon factory
-#   apps/utils/app_settings_system.py     — settings persistence
-#   apps/methods/iff_ilbm.py              — IFF ILBM write support
+# Layout (DPaint5-faithful):
+#   Left:   bitmap list panel (import / export / delete)
+#   Centre: menubar + zoomable scrollable DP5Canvas
+#   Right:  2-col tool gadget bar (SVG icons) + brush size slider +
+#           FG/BG swatches + IMAGE palette strip + USER palette (retro presets)
 
 import os, sys, random, json
 from collections import deque
@@ -8166,7 +8170,8 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
                         px.fill(Qt.GlobalColor.transparent)
                         p = QPainter(px); r.render(p); p.end()
                         buf = io.BytesIO()
-                        px.toImage().save(buf := io.BytesIO(), 'PNG')  # type: ignore
+                        px.toImage().save(buf, 'PNG')
+                        buf.seek(0)
                         img = Image.open(buf).convert('RGBA')
                     else:
                         img = Image.open(src_path).convert('RGBA')
@@ -8522,14 +8527,15 @@ class DP5Workshop(ColorPalPresetsMixin, QWidget):
         img_hdr[12] = (1<<n_planes)-1
         open(path,'wb').write(bytes(do)+bytes(img_hdr)+b''.join(bytes(p) for p in planes))
 
-    def _write_icns(self, path: str, img): #vers 1
+    def _write_icns(self, path: str, img): #vers 2
         """Write Apple ICNS file from PIL image."""
         import struct, io
+        from PIL import Image
         sizes = [(16,b'icp4'),(32,b'icp5'),(64,b'icp6'),
                  (128,b'ic07'),(256,b'ic08'),(512,b'ic09'),(1024,b'ic10')]
         chunks = bytearray()
         for sz, code in sizes:
-            frame = img.resize((sz,sz), img.LANCZOS)
+            frame = img.resize((sz,sz), Image.LANCZOS)
             buf = io.BytesIO(); frame.save(buf,'PNG')
             png = buf.getvalue()
             chunks += code + struct.pack('>I', 8+len(png)) + png
