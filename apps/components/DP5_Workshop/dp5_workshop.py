@@ -3945,6 +3945,8 @@ class DP5Workshop(ColorPalPresetsMixin, _ToolMenuMixin, QWidget):
         self.toolbar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.toolbar.setMouseTracking(True)
         self.titlebar = self.toolbar   # alias — drag detection uses self.titlebar
+        # gadgetbar_bg is applied via QFrame#titlebar rule in global stylesheet
+        # No per-widget setStyleSheet needed — theme engine handles it
 
         layout = QHBoxLayout(self.toolbar)
         layout.setContentsMargins(5, 5, 5, 5)
@@ -10998,6 +11000,7 @@ class DP5Workshop(ColorPalPresetsMixin, _ToolMenuMixin, QWidget):
                 pass
             # Clear any widget-level override so we inherit from QApplication
             self.setStyleSheet("")
+            # gadgetbar_bg applied via QFrame#titlebar in global stylesheet — no manual refresh needed
         except Exception as e:
             print(f"Theme application error: {e}")
 
