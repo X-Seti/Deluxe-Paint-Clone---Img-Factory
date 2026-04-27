@@ -866,11 +866,17 @@ class DP5SettingsDialog(QDialog):
             btn.setIconSize(QSize(icon_sz, icon_sz))
             lbl_short = label[:6]
             btn.setText(lbl_short)
+            # Theme-aware stylesheet — no hardcoded colours
+            acc = '#4a8a4a'
+            if _ws and _ws.app_settings:
+                _tc2 = _ws.app_settings.get_theme_colors() or {}
+                acc  = _tc2.get('accent_primary', acc)
             btn.setStyleSheet(
-                "QPushButton { font-size: 8px; color: palette(mid); "
-                "background: palette(base); border: 1px solid palette(mid); "
-                "padding-top: 2px; } "
-                "QPushButton:checked { background: #1a3a1a; border: 1px solid #4a4; }"
+                f"QPushButton {{ font-size: 8px; color: palette(mid); "
+                f"background: palette(base); border: 1px solid palette(mid); "
+                f"padding-top: 2px; }} "
+                f"QPushButton:checked {{ background: {acc}; "
+                f"border: 1px solid palette(highlight); }}"
             )
             btn.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
             grid_l.addWidget(btn, idx // cols, idx % cols)
@@ -2541,36 +2547,14 @@ class FGBGSwatch(QWidget):
         # BG rect (outer, slightly offset toward bottom-right)
         bg_r = QRect(gap, gap, w - gap - pad, h - gap - pad)
         p.fillRect(bg_r, self._bg)
-        #p.setPen(QPen(self._get_ui_color('viewport_text'), 1))
-        p.drawRect(bg_r)
-
-        #TODO: error
-        """
-        Traceback (most recent call last):
-        File "/home/x2/Documents/GitHub/Img-Factory-1.6/apps/components/DP5_Workshop/dp5_workshop.py", line 2473, in paintEvent
         p.setPen(QPen(self._get_ui_color('viewport_text'), 1))
-                  ^^^^^^^^^^^^^^^^^^
-        AttributeError: 'FGBGSwatch' object has no attribute '_get_ui_color'
-        Aborted                    (core dumped) ./launch_imgfactory.py
-        """
+        p.drawRect(bg_r)
 
         # FG rect (inner, offset toward top-left)
         fg_r = QRect(pad, pad, w - gap - pad, h - gap - pad)
         p.fillRect(fg_r, self._fg)
-        #p.setPen(QPen(self._get_ui_color('border'), 1))
-        p.drawRect(fg_r)
-
-        #TODO: error
-        """
-        Traceback (most recent call last):
-        File "/home/x2/Documents/GitHub/Img-Factory-1.6/apps/components/DP5_Workshop/dp5_workshop.py", line 2489, in paintEvent
         p.setPen(QPen(self._get_ui_color('border'), 1))
-                  ^^^^^^^^^^^^^^^^^^
-        AttributeError: 'FGBGSwatch' object has no attribute '_get_ui_color'
-        Aborted                    (core dumped) ./launch_imgfactory.py
-        """
-
-        #TODO; When light theee is active, the paint Gadgets still show for dark themes.
+        p.drawRect(fg_r)
 
     def _fg_rect(self) -> QRect:
         w, h = self.width(), self.height()
@@ -12402,6 +12386,7 @@ class _SpriteEditor(QWidget):
         # - Centre: sprite view
         centre = QVBoxLayout()
         ctrl = QHBoxLayout()
+
         self._add_dock_button(ctrl)
         ctrl.addWidget(QLabel("Sprite size:"))
         sizes = ["8×8","8×16","16×16","16×32","32×32","32×64","64×64"]
